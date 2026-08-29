@@ -1,0 +1,23 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# dependencies / build
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# local data
+data/
+*.log
+
+# generated renders of docs (built for phone reading, not source)
+docs/*.html
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
