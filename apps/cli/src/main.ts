@@ -85,7 +85,12 @@ async function investigate() {
   for (const url of urlList) {
     totals.sources++;
     let src: SourceRow | null = b("refetch") ? null : await findSourceByUrl(inv.id, url);
-    if (src && src.status !== "failed") {
+    if (src && src.status === "failed") {
+      totals.failed++;
+      console.log(`[failed earlier — use --refetch to retry] ${url}`);
+      continue;
+    }
+    if (src) {
       console.log(`[cached] ${url}`);
     } else {
       process.stdout.write(`[fetch]  ${url} … `);
@@ -203,7 +208,7 @@ async function source(id?: string) {
 async function proposed(id?: string) {
   const inv = id ? await getInvestigation(id) : null;
   if (!inv) return fail("wg proposed <inv>");
-  const preds = await query<{ label: string; n: string; ex: string }>(`SELECT predicate_label label, count(*) n, min(subject->>'name' || ' → ' || object->>'name') ex FROM relation_claims WHERE investigation_id=$1 AND predicate='other' AND status='raw' GROUP BY 1 ORDER BY n DESC`, [inv.id]);
+  const preds = await query<{ label: string; n: string; ex: string }>(`SELECT predicate_label label, count(*) n, min((subject->>'name') || ' → ' || (object->>'name')) ex FROM relation_claims WHERE investigation_id=$1 AND predicate='other' AND status='raw' GROUP BY 1 ORDER BY n DESC`, [inv.id]);
   console.log("proposed predicates:");
   for (const p of preds) console.log(`  ${String(p.n).padStart(4)}  ${p.label}   e.g. ${p.ex}`);
   const types = await query<{ label: string; n: string }>(

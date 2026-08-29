@@ -21,8 +21,11 @@ export function prepareText(text: string): Normalized {
 }
 
 /** Locate `quote` inside prepared text. Returns original-text offsets [start, end). */
+/** Models sometimes emit literal "\n" (backslash-n) sequences inside JSON strings for line breaks. */
+export const unescapeQuote = (quote: string): string => quote.replace(/\\[ntr]/g, " ");
+
 export function locateQuote(quote: string, prepared: Normalized): Located | null {
-  const q = normalize(quote);
+  const q = normalize(unescapeQuote(quote));
   if (q.length < MIN_QUOTE_NORM_CHARS) return null;
   const idx = prepared.norm.indexOf(q);
   if (idx >= 0) return { start: prepared.map[idx]!, end: prepared.map[idx + q.length - 1]! + 1, method: "exact", ratio: 1 };

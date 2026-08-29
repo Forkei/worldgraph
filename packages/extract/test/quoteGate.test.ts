@@ -55,6 +55,12 @@ describe("locateQuote", () => {
     expect(text.slice(loc.start, loc.end)).toContain("Digital Economy Lab");
   });
 
+  it("tolerates literal backslash-n line breaks emitted inside JSON strings", () => {
+    const loc = locateQuote("Founders\\n\\nUniversity Professor", prepared)!;
+    expect(loc).not.toBeNull();
+    expect(text.slice(loc.start, loc.end)).toBe("Founders\nUniversity Professor");
+  });
+
   it("rejects a paraphrase", () => {
     expect(locateQuote("Sample works as a professor at Example University in machine learning", prepared)).toBeNull();
   });
