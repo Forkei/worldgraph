@@ -186,18 +186,21 @@ self-contained (a claim row is a complete, portable fact). Resolution maps `(cla
 claim_entities        (claim_id, role enum('subject','object'), entity_id, PRIMARY KEY(claim_id, role))
 entities              (id, investigation_id, type text, canonical_name text, name_norm text,
                        aliases text[], identity_keys jsonb,     -- {email:[], phone:[], handle:[], url:[], ext:{edgar:..,orcid:..}}
-                       merged_from uuid[], registry_entity_id uuid null,   -- R6 workspace registry
+                       merged_from uuid[],
                        first_seen ts, last_seen ts, claim_count int, embedding vector(1024) null)
 resolution_candidates (id, investigation_id, entity_a, entity_b, score real, features jsonb,
                        state enum('pending','merged','rejected','expired'), created_at)
 resolution_decisions  (id, investigation_id, entity_a, entity_b,
                        decision enum('same','not_same'), method enum('identity_key','context','model','human'),
                        confidence real, decided_by text, rationale text, created_at)
-registry_entities     (id, workspace_id, type, canonical_name, identity_keys jsonb, ...)   -- R6
+investigation_links   (investigation_id, linked_investigation_id, created_at, PRIMARY KEY(investigation_id, linked_investigation_id))   -- R6: chosen at creation, editable
+graph_links           (id, entity_a, investigation_a, entity_b, investigation_b, score real, features jsonb,
+                       state enum('auto','confirmed','rejected','pending'), method, created_at)              -- R6: cross-graph same_as
 ```
 
 `entities` rows are **rebuilt** from claims + decisions. `merged_from` records the pre-merge cluster IDs so
-un-merge (R5) = insert a `not_same` decision + rebuild.
+un-merge (R5) = insert a `not_same` decision + rebuild. `entities.registry_entity_id` is dropped: graphs are
+never merged, only linked (§7.3).
 
 ### 3.5 Materialized graph (G1–G3)
 
@@ -482,10 +485,17 @@ UI lists `pending` candidates with both dossiers side by side and the shared evi
 evidence quotes → decision + rationale, stored with `method='model'`; workspace setting controls whether
 model decisions auto-apply or queue for a human.
 
-### 7.3 Cross-investigation registry (R6)
-After rebuild, each entity with ≥ 1 identity key or ≥ 3 claims is matched against `registry_entities`
-(same workspace) with the same scorer; a match sets `entities.registry_entity_id`. Queries can opt in to
-`scope: workspace` to traverse across investigations. Policy flag `isolate_investigations` disables it.
+### 7.3 Graph linking (R6)
+Graphs are never merged. An investigation created as *linked* lists the graphs it may connect to
+(`investigation_links`). After each rebuild of either side, the same scorer (§7.1 steps 5–7) runs across
+the pair and writes `graph_links` rows: `≥ 0.90` → `auto`, `0.60–0.90` → `pending` (review queue, same UI
+as candidates), decisions persist as `confirmed`/`rejected`. Identity-key matches link at 0.98. Links carry
+no claims; each side keeps its own entity, attributes, and edges. Consumers: queries with `scope: linked`
+(§11) traverse `graph_links` as a `same_as` edge; the canvas draws linked entities as a dashed
+cross-graph edge; the planner reads linked graphs for (a) frontier seeding — known employers, aliases,
+identity keys of the focus — and (b) coverage, so it does not re-fetch what a linked graph already
+established (facts still get re-verified if the goal needs them). Fresh investigations have no links and
+behave as fully isolated graphs.
 
 ---
 
@@ -519,7 +529,7 @@ Entity summary text = canonical name + type + top attributes + top edges (≤ 30
 Q2 (semantic search), P2 (novelty = 1 − max cosine to existing entities).
 
 ### 8.4 Snapshots & diff (G5)
-Snapshot = `graph.json` `{entities:[{id, type, name, attrs, registry_id}], edges:[{src, pred, dst, props, evidence_count}]}`
+Snapshot = `graph.json` `{entities:[{id, type, name, attrs}], edges:[{src, pred, dst, props, evidence_count}], links:[{entity, investigation, linked_entity, score}]}`
 written to object store + stats row. `diff(a, b)` keyed by stable IDs where possible, else by
 `(type, name_norm)` / `(src_key, pred, dst_key)`; output `{added, removed, changed}` with per-item claim refs.
 

@@ -126,7 +126,7 @@ Layered bottom-up. IDs are referenced by the build plan (§7).
 - **R3 Blocking + scoring.** Candidate pairs from blocking keys (name phonetics, location, org); scored on string similarity, context overlap, temporal plausibility, embedding similarity. Thresholds: auto-merge / review / reject.
 - **R4 Review queue.** Humans (or a stronger model in review mode) decide candidates; decisions persist as `same_as` / `not_same_as` claims so re-resolution respects them.
 - **R5 Un-merge.** Delete the `same_as` claim, rebuild. Free, because entities are views.
-- **R6 Cross-investigation registry.** Workspace-level identity so one person found in two investigations is one node — policy-gated, since some workspaces must keep investigations isolated.
+- **R6 Graph linking.** Investigations are always separate graphs. At creation you choose **fresh** or **linked to** a list of existing graphs. When linked, the resolver runs across the chosen graphs and records cross-graph `same_as` links (entity in graph A ↔ entity in graph B, with confidence and evidence) — nodes are never merged across graphs, only connected. Queries and the canvas can follow links (`scope: linked`) or stay local; the planner can read linked graphs to seed the frontier and to count coverage. Links are re-computed when either graph rebuilds and can be rejected like any resolution candidate. (Decision 2026-08-29.)
 
 ### 5.4 Graph store (G)
 - **G1 Canonical store.** Postgres for claims / sources / entities / audit (append-only), with a property-graph projection for traversal (Apache AGE on the same Postgres in v1; Neo4j or Memgraph if traversal load demands). Edges materialized from claims by an idempotent build job.
@@ -204,7 +204,7 @@ So: **G1 is ours.** G6 (push resolved entities as `contact` / `company` / `artic
 | M5 | **Governance + legal** — policies enforced at plan + extract time, audit log, erasure (after the legal walkthrough) | Safe to widen scope / add a user | X3, L1–L4, L6–L7 |
 | M6 | **Canvas** — WebGL graph, dossier drawer, provenance drill-down, expand-in-place | The Iron-Man view | V1–V3 |
 | M7 | **Watch** — snapshots, diffs, scheduled re-runs, alerts | Standing value, not one-shot | G5, W1–W3 |
-| M8 | **Platform** — API, MCP, evals in CI, shared registry, optional client-system sync, multi-tenant | Others can build on it / use it | F1–F7, R6, L5, (G6) |
+| M8 | **Platform** — API, MCP, evals in CI, graph linking, optional client-system sync, multi-tenant | Others can build on it / use it | F1–F7, R6, L5, (G6) |
 | M9 | **Polish** — geo / timeline layouts, compare view, reports, self-host | Final product | V4, exports |
 
 Rule: nothing in M(n) is designed so that M(n+1) must undo it. Concretely: the claim model (§4.3), the
@@ -215,7 +215,7 @@ policy hook points (§5.9), and the plan event log (P7) exist from M0 even when 
 - Not a consumer background-check product (FCRA). Not for employment / credit / tenant screening.
 - No covert access: no credential use, no private-account access, no breach-data *contents* (presence only), no CAPTCHA farms.
 - No face recognition as identity. Reverse image produces candidates for the resolver, never an auto-merge.
-- No "index the United States." Global coverage emerges from many bounded investigations sharing an entity registry (R6), never from an unbounded crawl.
+- No "index the United States." Wide coverage emerges from many bounded investigations that stay separate and are *linked* where entities match (R6), never from an unbounded crawl or a single merged world graph.
 - No user-facing latency that depends on the client system's build cycle.
 
 ## 9. Decisions log
@@ -225,7 +225,7 @@ policy hook points (§5.9), and the plan event log (P7) exist from M0 even when 
 2. **Own project.** Not the client's IP. The client system may become a customer/partner later; nothing is given away. Client-system sync (G6) is **deferred and optional** — the canonical graph is ours, and no design decision may depend on the client system.
 3. **Private individuals are in scope** — explicitly interesting, not excluded. Governance still exists as a *mechanism* (policies, audit, redaction hooks) but the owner workspace runs an `unrestricted` policy by default. Legal posture (GDPR etc.) to be talked through together before any second user — see the open item below.
 4. **Own the graph: yes.** Client-system bridge: not now.
-5. **Shared world graph vs isolated investigations** — open, the maintainer asked what it means; see open item.
+5. **Linked graphs, not a merged world graph.** Each investigation is its own graph. On creation: *fresh*, or *linked to* a chosen list of existing graphs; the system then connects matching nodes across graphs with `same_as` links while the graphs stay separate. (Answered later the same day; see R6.)
 6. **Autonomy:** approve-each-hop mode first (we choose together while building), auto-within-budget as the eventual default.
 7. **Canvas comes near the end; polish last.** Everything before it is CLI / MCP / SQL driven.
 8. **Stack approved** (TypeScript, single Postgres with pgvector + AGE, pg-boss, later Next.js + sigma.js). Priority: power and flexibility.
@@ -237,7 +237,6 @@ policy hook points (§5.9), and the plan event log (P7) exist from M0 even when 
 14. **Process:** git repo from day one, small commits, clean and organized; build slowly, checking the vision at each step.
 
 **Open items**
-- *Shared world graph (Q5).* Decide whether entities persist across investigations in one world graph (the "map the United States" idea — every run enriches the same graph) or each investigation is an isolated graph merged only on request. See the explanation in the 2026-08-29 conversation; design supports both via the workspace registry (R6).
 - *Legal posture (Q10).* Walk through GDPR / CCPA / FCRA / scraping ToS together; then set the default policy and what the product must do for erasure and access requests.
 - *Licensed data-broker connectors.* Interface exists; none enabled until decided.
 - *Graph DB.* Postgres + AGE + pgvector; revisit only if traversal p95 > 200 ms on 100k-edge investigations.

@@ -20,7 +20,7 @@ Nothing here is built yet.*
 | M5 | Governance + legal | safe to widen scope | policies enforced, audit, erasure — after the legal walkthrough |
 | M6 | Canvas | the Iron-Man view | WebGL graph with provenance drill-down |
 | M7 | Watch | standing value | scheduled re-run, diff, alerts |
-| M8 | Platform | others build on / use it | API, MCP, evals in CI, shared registry, multi-tenant, optional client-system sync |
+| M8 | Platform | others build on / use it | API, MCP, evals in CI, graph linking, multi-tenant, optional client-system sync |
 | M9 | Polish | final product | layouts, compare, reports, self-host |
 
 Process rules (decision 2026-08-29): git from day one, small commits, one concern per commit; check the
@@ -156,7 +156,7 @@ for `entities, claim_entities, resolution_*, edges, entity_attributes, snapshots
 
 ## M8 — Platform
 
-**Creates:** full REST API (§14.1) + SSE, MCP server, OpenAPI, job hardening, OpenTelemetry + metrics, eval harness in CI, workspace-level shared registry (R6) with per-workspace on/off, workspaces/users/roles/RLS, model-review mode for candidates, **optional** client-system sync behind a flag.
+**Creates:** full REST API (§14.1) + SSE, MCP server, OpenAPI, job hardening, OpenTelemetry + metrics, eval harness in CI, graph linking (R6: `investigation_links`, cross-graph `graph_links`, `scope: linked` queries, link review queue), workspaces/users/roles/RLS, model-review mode for candidates, **optional** client-system sync behind a flag.
 
 **Acceptance**
 - An external agent (Claude Code via MCP) runs an investigation, approves actions, queries, exports — without the web UI.
