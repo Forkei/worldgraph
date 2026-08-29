@@ -1,0 +1,12 @@
+[
+  { "id": "wiki-person", "kind": "encyclopedia biography", "url": "https://en.wikipedia.org/wiki/Person_B" },
+  { "id": "wiki-org", "kind": "encyclopedia organization", "url": "https://en.wikipedia.org/wiki/Alder_Maple" },
+  { "id": "patent", "kind": "patent record", "url": "https://patents.google.com/patent/US10000000B2/en" },
+  { "id": "court", "kind": "court opinion", "url": "https://supreme.justia.com/cases/federal/us/576/644/" },
+  { "id": "fec", "kind": "government record (campaign finance)", "url": "https://www.fec.gov/data/candidate/P80001571/" },
+  { "id": "speaker", "kind": "conference speaker profile", "url": "https://www.ted.com/speakers/bill_gates" },
+  { "id": "faculty", "kind": "university faculty homepage", "url": "https://www.cs.cmu.edu/~tom/" },
+  { "id": "essay", "kind": "long-form personal essay", "url": "https://paulgraham.com/greatwork.html" },
+  { "id": "company", "kind": "company about page", "url": "https://www.anthropic.com/company" },
+  { "id": "forum", "kind": "forum thread", "url": "https://news.ycombinator.com/item?id=3078128" }
+]

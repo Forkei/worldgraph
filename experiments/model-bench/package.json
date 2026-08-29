@@ -1,0 +1,18 @@
+{
+  "name": "worldgraph-model-bench",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Pre-M0 experiment: compare extraction models (Claude vs Gemini) on real pages for cost, speed, and accuracy.",
+  "scripts": {
+    "fetch": "node fetch.mjs",
+    "bench": "node bench.mjs",
+    "judge": "node judge.mjs",
+    "report": "node report.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@google/genai": "^2.19.0",
+    "dotenv": "^17.4.2"
+  }
+}
