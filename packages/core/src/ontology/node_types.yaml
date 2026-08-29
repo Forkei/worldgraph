@@ -1,0 +1,45 @@
+# Node types. Open-ended: the extractor may emit `other` with a free-text label; frequent labels get
+# promoted here by hand. `identity_keys` are the hint keys the resolver treats as hard identity (M1).
+person:
+  label: Person
+  identity_keys: [email, phone, handle, url, orcid, license]
+organization:
+  label: Organization
+  subtypes: [company, school, university, agency, nonprofit, club, team, court]
+  identity_keys: [domain, url, edgar_cik, registry_id]
+place:
+  label: Place
+  subtypes: [address, city, region, country, venue, coordinates]
+  geocodable: true
+event:
+  label: Event
+  subtypes: [conference, hearing, incident, fair, election, meeting, launch]
+document:
+  label: Document
+  subtypes: [article, post, filing, record, transcript, page, book, paper]
+  identity_keys: [url, doi]
+account:
+  label: Account
+  subtypes: [email, phone, handle, domain, username]
+artifact:
+  label: Artifact
+  subtypes: [photo, video, paper, patent, product, software]
+position:
+  label: Position
+  description: A role reified when it has its own attributes (e.g. "Chief Scientist, 2019–2022").
+asset:
+  label: Asset
+  subtypes: [vehicle, vessel, aircraft, property]
+credential:
+  label: Credential
+  subtypes: [license, degree, certification, award]
+legal_matter:
+  label: LegalMatter
+  subtypes: [case, filing, judgment]
+  identity_keys: [docket]
+money_flow:
+  label: MoneyFlow
+  subtypes: [donation, contract, grant, investment, salary]
+other:
+  label: Other
+  description: Escape hatch. Requires a type_label.

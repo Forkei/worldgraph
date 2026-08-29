@@ -1,0 +1,22 @@
+services:
+  db:
+    # Postgres 16 + pgvector. Apache AGE (graph projection, M4) will be added to this same
+    # PG16 base image so the data volume never has to migrate across major versions.
+    image: pgvector/pgvector:pg16
+    container_name: worldgraph-db
+    environment:
+      POSTGRES_USER: worldgraph
+      POSTGRES_PASSWORD: worldgraph
+      POSTGRES_DB: worldgraph
+    ports:
+      - "5433:5432"
+    volumes:
+      - wg-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U worldgraph -d worldgraph"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  wg-pgdata:

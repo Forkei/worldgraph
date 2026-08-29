@@ -1,0 +1,102 @@
+# Predicates (edge types). All directional; `inverse` is the label used when reading the edge backwards.
+# `domain`/`range` are node types allowed as subject/object ('*' = any). `props` are the property keys the
+# extractor may attach. `attribute_class` is the governance floor for claims of this predicate.
+# `derived: true` predicates are computed by the graph build (M1+), never extracted.
+works_at:
+  inverse: employs
+  domain: [person]
+  range: [organization]
+  props: [role, department, valid_from, valid_to, date_precision]
+studied_at:
+  inverse: educated
+  domain: [person]
+  range: [organization]
+  props: [degree, field, valid_from, valid_to, date_precision]
+lives_at:
+  inverse: residence_of
+  domain: [person]
+  range: [place]
+  props: [valid_from, valid_to, kind, date_precision]
+  attribute_class: restricted
+located_in:
+  inverse: contains
+  domain: [place, organization, event]
+  range: [place]
+  transitive: true
+related_to:
+  inverse: related_to
+  domain: [person]
+  range: [person]
+  props: [relation]
+  attribute_class: sensitive
+associated_with:
+  inverse: associated_with
+  domain: ["*"]
+  range: ["*"]
+  props: [context, strength]
+participated_in:
+  inverse: had_participant
+  domain: [person, organization]
+  range: [event]
+  props: [role, date, date_precision]
+authored:
+  inverse: created_by
+  domain: [person, organization]
+  range: [document, artifact]
+  props: [date, date_precision]
+mentions:
+  inverse: mentioned_in
+  domain: [document]
+  range: ["*"]
+owns:
+  inverse: owned_by
+  domain: [person, organization]
+  range: [organization, asset, place, artifact]
+  props: [share, valid_from, valid_to, date_precision]
+member_of:
+  inverse: has_member
+  domain: [person, organization]
+  range: [organization]
+  props: [role, valid_from, valid_to, date_precision]
+funded:
+  inverse: received_from
+  domain: [person, organization]
+  range: [person, organization, event]
+  props: [amount, currency, date, date_precision, kind]
+holds:
+  inverse: held_by
+  domain: [person]
+  range: [credential, position]
+  props: [valid_from, valid_to, date_precision]
+party_to:
+  inverse: has_party
+  domain: [person, organization]
+  range: [legal_matter]
+  props: [role]
+other:
+  inverse: other
+  domain: ["*"]
+  range: ["*"]
+  description: Escape hatch. Requires a predicate_label.
+# derived-only
+adjacent_to:
+  inverse: adjacent_to
+  domain: [place]
+  range: [place]
+  props: [distance_m]
+  derived: true
+preceded_by:
+  inverse: succeeded_by
+  domain: ["*"]
+  range: ["*"]
+  derived: true
+same_as:
+  inverse: same_as
+  domain: ["*"]
+  range: ["*"]
+  system: true
+not_same_as:
+  inverse: not_same_as
+  domain: ["*"]
+  range: ["*"]
+  system: true

@@ -1,0 +1,13 @@
+{
+  "name": "@worldgraph/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "wg": "./src/main.ts" },
+  "dependencies": {
+    "@worldgraph/acquire": "workspace:*",
+    "@worldgraph/core": "workspace:*",
+    "@worldgraph/db": "workspace:*",
+    "@worldgraph/extract": "workspace:*"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@worldgraph/acquire",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "@worldgraph/core": "workspace:*",
+    "linkedom": "^0.18.12"
+  }
+}

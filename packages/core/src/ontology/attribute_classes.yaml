@@ -1,0 +1,34 @@
+# Governance taxonomy for attribute_class tagging (X3). The extractor tags every claim; policies (L1)
+# decide what happens to each class. Under the `unrestricted` policy everything is kept.
+restricted:
+  - home_address
+  - phone_personal
+  - dob
+  - gov_id
+  - financial_account
+  - health
+  - sexual_orientation
+  - religion
+  - immigration_status
+  - minor_identity
+  - precise_geolocation
+  - biometric
+sensitive:
+  - family_relation
+  - personal_email
+  - ethnicity
+  - political_affiliation
+  - union_membership
+  - criminal_record
+  - residence_city
+public:
+  - employer
+  - role
+  - education
+  - public_handle
+  - work_email
+  - work_phone
+  - publications
+  - public_statements
+  - awards
+  - affiliations

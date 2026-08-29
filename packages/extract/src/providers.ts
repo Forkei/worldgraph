@@ -1,0 +1,112 @@
+// Model providers (pluggable extractor backends). One call shape for Anthropic and Gemini; every call
+// returns tokens, cost, latency so the ledger and benchmarks are exact.
+import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
+import { env, requireEnv } from "@worldgraph/core";
+
+export interface ModelSpec {
+  /** alias used on the CLI */
+  alias: string;
+  id: string;
+  provider: "anthropic" | "gemini";
+  label: string;
+  /** USD per 1M tokens: [input, output] (output includes thinking) */
+  price: [number, number];
+  effort?: "low" | "medium" | "high";
+  thinking: boolean;
+}
+
+export const MODELS: Record<string, ModelSpec> = {
+  "gemini-3.7-flash": { alias: "gemini-3.7-flash", id: "gemini-3.7-flash", provider: "gemini", label: "Gemini 3.7 Flash", price: [0.75, 3.75], thinking: true },
+  "gemini-3.5-flash-lite": { alias: "gemini-3.5-flash-lite", id: "gemini-3.5-flash-lite", provider: "gemini", label: "Gemini 3.5 Flash-Lite", price: [0.3, 2.5], thinking: true },
+  "haiku-4-5": { alias: "haiku-4-5", id: "claude-haiku-4-5", provider: "anthropic", label: "Claude Haiku 4.5", price: [1, 5], thinking: false },
+  "sonnet-5": { alias: "sonnet-5", id: "claude-sonnet-5", provider: "anthropic", label: "Claude Sonnet 5 (low)", price: [2, 10], effort: "low", thinking: true },
+  "sonnet-5-medium": { alias: "sonnet-5-medium", id: "claude-sonnet-5", provider: "anthropic", label: "Claude Sonnet 5 (medium)", price: [2, 10], effort: "medium", thinking: true },
+  "opus-5": { alias: "opus-5", id: "claude-opus-5", provider: "anthropic", label: "Claude Opus 5 (low)", price: [5, 25], effort: "low", thinking: true },
+};
+export const DEFAULT_MODEL = "gemini-3.7-flash";
+
+export function getModel(alias: string): ModelSpec {
+  const m = MODELS[alias];
+  if (!m) throw new Error(`unknown model alias "${alias}". Known: ${Object.keys(MODELS).join(", ")}`);
+  return m;
+}
+
+export interface LlmRequest {
+  system: string[];       // system blocks; [0] is the stable, cacheable prefix
+  user: string;
+  schema: Record<string, unknown>;
+  maxOutputTokens?: number;
+}
+export interface LlmResult {
+  text: string;
+  inTok: number;
+  outTok: number;
+  usd: number;
+  ms: number;
+  stop: string | null;
+}
+
+const costOf = (m: ModelSpec, inTok: number, outTok: number) => (inTok * m.price[0] + outTok * m.price[1]) / 1e6;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+let anthropicClient: Anthropic | null = null;
+let geminiClient: GoogleGenAI | null = null;
+
+export async function callModel(m: ModelSpec, req: LlmRequest): Promise<LlmResult> {
+  let delay = 3000;
+  for (let attempt = 0; ; attempt++) {
+    const t0 = Date.now();
+    try {
+      const r = m.provider === "anthropic" ? await callAnthropic(m, req) : await callGemini(m, req);
+      return { ...r, usd: costOf(m, r.inTok, r.outTok), ms: Date.now() - t0 };
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e);
+      const retryable = /429|rate|overloaded|503|500|502|ECONN|timeout|fetch failed|UNAVAILABLE|RESOURCE_EXHAUSTED/i.test(msg);
+      if (!retryable || attempt >= 3) throw e;
+      await sleep(delay);
+      delay *= 2;
+    }
+  }
+}
+
+async function callAnthropic(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmResult, "usd" | "ms">> {
+  anthropicClient ??= new Anthropic({ apiKey: requireEnv("anthropicKey") });
+  const system = req.system.map((text, i) => (i === 0 ? { type: "text" as const, text, cache_control: { type: "ephemeral" as const } } : { type: "text" as const, text }));
+  const params: Record<string, unknown> = {
+    model: m.id,
+    max_tokens: req.maxOutputTokens ?? 48_000,
+    system,
+    messages: [{ role: "user", content: req.user }],
+    output_config: { format: { type: "json_schema", schema: req.schema }, ...(m.effort ? { effort: m.effort } : {}) },
+  };
+  if (m.thinking) params.thinking = { type: "adaptive" };
+  // stream + finalMessage: large max_tokens require streaming to avoid HTTP timeouts
+  const res = await anthropicClient.messages.stream(params as never).finalMessage();
+  if (res.stop_reason === "refusal") throw new Error("refusal: " + JSON.stringify(res.stop_details ?? {}));
+  const text = res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
+  const u = res.usage;
+  const inTok = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+  return { text, inTok, outTok: u.output_tokens ?? 0, stop: res.stop_reason ?? null };
+}
+
+async function callGemini(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmResult, "usd" | "ms">> {
+  geminiClient ??= new GoogleGenAI({ apiKey: requireEnv("geminiKey") });
+  const res = await geminiClient.models.generateContent({
+    model: m.id,
+    contents: req.user,
+    config: {
+      systemInstruction: req.system.join("\n\n"),
+      responseMimeType: "application/json",
+      responseJsonSchema: req.schema,
+      maxOutputTokens: req.maxOutputTokens ?? 65_536,
+    },
+  });
+  const u = res.usageMetadata ?? {};
+  const stop = res.candidates?.[0]?.finishReason ?? null;
+  const text = res.text ?? "";
+  if (!text) throw new Error(`gemini returned no text (finish=${stop})`);
+  return { text, inTok: u.promptTokenCount ?? 0, outTok: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0), stop: String(stop) };
+}
+
+export const hasKeyFor = (m: ModelSpec): boolean => (m.provider === "anthropic" ? !!env.anthropicKey : !!env.geminiKey);

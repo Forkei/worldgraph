@@ -1,0 +1,23 @@
+{
+  "name": "worldgraph",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WorldGraph — goal-directed investigation engine that builds provenance-backed relationship graphs from the open web.",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "wg": "tsx apps/cli/src/main.ts",
+    "db:up": "docker compose -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:migrate": "tsx apps/cli/src/main.ts db migrate",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

@@ -21,3 +21,6 @@ docs/*.html
 Thumbs.db
 .vscode/
 .idea/
+
+# portable postgres binaries + local cluster (dev only)
+tools/
