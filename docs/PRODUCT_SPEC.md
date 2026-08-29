@@ -61,7 +61,10 @@ whether the investigation is allowed at all.
 ## 4. Ontology
 
 ### 4.1 Node types
-Extensible via a schema registry, not code. Initial set:
+Extensible via a schema registry (YAML), not code — and **open-ended by design** (decision 2026-08-29: "we
+should not be limited to those"). The extractor may emit `type: other {label}` and `predicate: other {label}`
+when nothing in the registry fits; these are stored as-is, counted, and surfaced in a "proposed types /
+predicates" report so frequent ones get promoted into the registry by hand. Initial set:
 `Person · Organization (company, school, agency, nonprofit, club) · Place (address, city, region, country, coordinates) · Property (parcel) · Event (conference, hearing, incident, fair, election) · Document (article, post, filing, record, transcript, page) · Account (email, phone, handle, domain, username) · Artifact (photo, video, paper, patent, product) · Position (reified role when it has its own attributes) · Asset (vehicle, vessel, aircraft) · Credential (license, degree, certification) · LegalMatter (case, filing) · MoneyFlow (donation, contract, grant)`
 
 ### 4.2 Edge types — all directional, all with an inverse label, all carry properties
@@ -84,22 +87,38 @@ Extensible via a schema registry, not code. Initial set:
 | `preceded_by` (at an address, in a role) | `succeeded_by` | — derived |
 
 ### 4.3 The claim model — extraction produces claims; the graph is a view over them
+Two kinds of claim, because a link between two things and a fact about one thing are different
+(decision 2026-08-29). Both carry identical provenance.
+
 ```
-Claim {
-  id, investigation_id,
-  subject_mention, predicate, object_mention | literal,
-  properties: { ... },                          # edge / attribute properties
-  source: { url, fetched_at, content_hash, span_start, span_end, quote },
-  extractor: { model, prompt_version },
-  confidence: 0..1,
-  attribute_class: public | sensitive | restricted,   # governance tag
+Provenance {                                   # on every claim of either kind
+  source: { url, title, published_at?, fetched_at, content_hash },
+  quote, span_start, span_end,                 # verbatim, validated against the page text
+  chunk_index, extractor: { model, prompt_version, effort }, cost_usd,
+  confidence: 0..1, verified?: bool,
+  attribute_class: public | sensitive | restricted,
   status: raw | resolved | rejected | redacted
 }
-Mention  --(resolver)-->  Entity { id, type, canonical_name, aliases[], identity_keys{}, merged_from[] }
-Edge = aggregation of Claims between two Entities with one predicate (evidence_count, date bounds, max confidence)
+Mention {                                      # how the page refers to a thing
+  surface: "Mrs Doe",                          # exactly as written in the quote
+  name: "Jane Doe",                            # the extractor's best full name for who is meant
+  type: person | organization | …  | other{label},
+  hints: { email?, handle?, url?, org?, location?, … },
+  surface_in_quote: bool                       # false when the quote says "she"/"the principal" — allowed, recorded
+}
+RelationClaim { id, investigation_id, subject: Mention, predicate, object: Mention, properties{}, …Provenance }
+AttributeClaim{ id, investigation_id, entity: Mention, key, value, datatype, properties{}, …Provenance }
+
+Mention  --(resolver, M1)-->  Entity { id, type, canonical_name, aliases[], identity_keys{}, merged_from[] }
+Edge      = aggregation of RelationClaims between two Entities with one predicate (evidence_count, date bounds, max confidence)
+Attribute = aggregation of AttributeClaims on one Entity with one key
 ```
-Claims are immutable and append-only. Entities and edges are **rebuilt from claims** by a deterministic
-job. That is what makes re-resolution, un-merging, and redaction possible.
+The **quote** must exist verbatim in the page (hard gate). The **mention** need not appear literally in the
+quote — "Mrs Doe", "she", "the company" are fine when the extractor knows who is meant; `surface_in_quote`
+records it so the resolver can weight such claims lower.
+
+Claims are immutable and append-only. Entities, edges, and attributes are **rebuilt from claims** by a
+deterministic job. That is what makes re-resolution, un-merging, and redaction possible.
 
 ## 5. Capabilities — what / why / how it works / implementation
 
@@ -113,7 +132,7 @@ Layered bottom-up. IDs are referenced by the build plan (§7).
 - **A5 Source store.** Every fetched artifact is content-addressed and retained per policy; an investigation can be replayed from cache without refetching.
 
 ### 5.2 Extraction (X)
-- **X1 Schema-constrained LLM extraction.** *What:* page text → `Claim[]`. *How:* the prompt is generated from the ontology registry so the model can only emit known types/predicates; structured output; **every claim carries a verbatim quote validated against the source text** — hard reject otherwise (the hallucination gate already proven in `the client loader/extract.mjs`). Chunk with overlap, merge across chunks. *Impl:* Sonnet for bulk, Opus/Fable for low-confidence re-extraction; prompt versioning; per-page cost logged.
+- **X1 Schema-constrained LLM extraction.** *What:* page text → `Claim[]`. *How:* the prompt is generated from the ontology registry so the model can only emit known types/predicates; structured output; **every claim carries a verbatim quote validated against the source text** — hard reject otherwise (the hallucination gate already proven in `the client loader/extract.mjs`). Chunk with overlap, merge across chunks. *Impl:* fast, cheap, accurate models for bulk — Sonnet 5 at low/medium effort as the starting point, Haiku 4.5 benchmarked against it on the gold set; Opus 5 reserved for low-confidence re-extraction (decision 2026-08-29). Model is a per-run setting; prompt versioning; per-page cost logged.
 - **X2 Page classification.** Cheap pre-pass (Haiku): `profile | article | directory | record | forum | irrelevant` + relevance-to-goal → decides extraction depth or skip. Cuts extraction spend by roughly half.
 - **X3 Attribute-class tagging.** Each claim is tagged `public / sensitive / restricted` against a fixed taxonomy (home address, phone, DOB, government IDs, health, minors, orientation, religion, immigration status, financial accounts…) so governance (§5.9) can redact **before persistence**.
 - **X4 Temporal normalization.** "since 2016", "last spring", "former" → `valid_from / valid_to` with precision flags, anchored to page date.

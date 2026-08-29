@@ -156,29 +156,40 @@ INDEX  (investigation_id, status)
 
 ### 3.3 Claims — the root (spec §4.3)
 
+Two tables, one shared provenance shape (decision 2026-08-29: a link and a fact-about-one-thing are different).
+
 ```sql
-claims   (id, investigation_id, source_id,
-          subject jsonb,        -- Mention: {surface, type, hints:{email?,handle?,url?,org?,location?...}}
-          predicate text,       -- from ontology registry, or 'attr:<key>' for literal attributes
-          object jsonb null,    -- Mention (relation claims)
-          literal jsonb null,   -- {value, datatype} (attribute claims)
-          properties jsonb,     -- edge/attribute props: role, valid_from, valid_to, precision, amount…
-          quote text, span_start int, span_end int,  -- verbatim, validated (§6.4)
-          confidence real,      -- extractor confidence 0..1
-          verified bool null,   -- X6 self-check result
-          attribute_class enum('public','sensitive','restricted'),
-          status enum('raw','resolved','rejected','redacted'),
-          redaction_reason text null,
-          extractor jsonb,      -- {model, prompt_version, chunk_index, cost_usd}
-          chunk_hash bytea,     -- for idempotent re-extraction
-          created_at)
-INDEX (investigation_id, predicate)
-INDEX (investigation_id, source_id)
+-- shared provenance columns (both tables):
+--   id, investigation_id, source_id, chunk_index int, chunk_hash bytea,
+--   quote text, span_start int, span_end int,          -- verbatim, validated (§6.4)
+--   confidence real, verified bool null,               -- extractor confidence; X6 self-check
+--   attribute_class enum('public','sensitive','restricted'),
+--   status enum('raw','resolved','rejected','redacted'), reject_reason text null, redaction_reason text null,
+--   extractor jsonb,                                   -- {model, prompt_version, effort, cost_usd}
+--   created_at
+
+relation_claims  (…provenance…,
+          subject jsonb,        -- Mention: {surface, name, type, label?, hints{}, surface_in_quote}
+          predicate text,       -- registry predicate, or 'other'
+          predicate_label text null,   -- free text when predicate = 'other'
+          object jsonb,         -- Mention
+          properties jsonb)     -- role, valid_from, valid_to, date_precision, amount, …
+INDEX (investigation_id, predicate), (investigation_id, source_id)
 INDEX gin (subject jsonb_path_ops), gin (object jsonb_path_ops)
+
+attribute_claims (…provenance…,
+          entity jsonb,         -- Mention
+          key text,             -- e.g. age, birth_date, title, nationality, bio, phone, …
+          value text, value_norm text, datatype enum('string','number','date','date_range','url','email','phone','money','geo'),
+          properties jsonb)     -- valid_from/valid_to/precision for time-bound attributes
+INDEX (investigation_id, key), (investigation_id, source_id)
+INDEX gin (entity jsonb_path_ops)
 ```
 
 **Why no `mentions` table:** a mention has no identity outside its claim; storing it inline keeps claims
 self-contained (a claim row is a complete, portable fact). Resolution maps `(claim_id, role)` → entity.
+Mentions with `type='other'` carry a `label`; a nightly report counts `other` labels and `predicate_label`s
+so frequent ones can be promoted into the registry (§4).
 
 ### 3.4 Resolution
 
@@ -326,17 +337,15 @@ public:     [employer, role, education, public_handle, work_email, publications,
 fetch(url, opts):
   0. policy/robots check → deny → Source{status:'skipped', error:'policy'}
   1. cache: sources by (url|final_url) within TTL (default 7d) → reuse
-  2. HTTP GET (undici; UA string; timeout 20s; max 10 MB)
-       content-type → html: readability (Mozilla Readability on linkedom DOM) → text
-                    → pdf: pdf-parse → text (fallback OCR if < 200 chars/page)
-                    → image: OCR (tesseract) + EXIF
-                    → json/xml: raw
-     success = status 2xx ∧ text.length ≥ 400 ∧ boilerplate_ratio < 0.8
-  3. else BROWSER: Playwright Chromium (pool of N contexts, proxy per context), wait networkidle ≤ 15s,
-     scroll once, extract via Readability on rendered DOM; also screenshot → blob (used by V3 highlight fallback)
-  4. else FIRECRAWL (hosted, handles anti-bot) — same normalized result shape          [D: optional provider]
-  5. else ARCHIVE: Wayback CDX API nearest capture; archive.today; mark fetch_method='archive', published_at from capture
-  6. all fail → Source{status:'failed', error}, cost logged, frontier action marked failed (planner may retry once via different method)
+  2. FIRECRAWL /scrape (primary — decision 2026-08-29): formats [markdown, html, links], onlyMainContent,
+     handles JS rendering, PDFs, and most anti-bot; returns metadata (title, published date, language).
+     text = markdown; raw html → blob; screenshot optional (V3 highlight fallback)
+     success = 2xx ∧ text.length ≥ 400
+  3. else HTTP GET (undici; timeout 20s; max 10 MB) + Readability (linkedom) for html; pdf-parse for pdf;
+     OCR (tesseract) + EXIF for images; raw for json/xml
+  4. else ARCHIVE: Wayback CDX API nearest capture; archive.today; mark fetch_method='archive', published_at from capture
+  5. all fail → Source{status:'failed', error}, cost logged, frontier action marked failed (planner may retry once)
+  (Playwright is not in the cascade; added only if Firecrawl proves insufficient for a needed site class.)
 ```
 
 Normalized result: `{ url, final_url, status, method, content_type, title, text, published_at?, lang, raw_blob, links[] }`.
@@ -398,8 +407,11 @@ system[1]:          investigation context: goal summary, focus entity, known ali
 user:               <page metadata: url, title, published_at> <chunk text>
 output_config.format: zodOutputFormat(ExtractionSchema)
 ```
-Model: `claude-opus-5`, adaptive thinking, `effort: medium` for bulk; re-extraction of low-confidence chunks
-at `effort: high`. Refusal handling: `stop_reason === 'refusal'` → chunk marked `skipped:refusal`, logged.
+Model (decision 2026-08-29: fast, cheap, still accurate): bulk extraction on **`claude-sonnet-5`** at
+`effort: low`/`medium`; **`claude-haiku-4-5`** benchmarked against it on the gold set and used where it
+holds; **`claude-opus-5`** only for re-extraction of low-confidence chunks. Model + effort are per-run
+settings, recorded in `extractor` on every claim so quality can be compared per model. Refusal handling:
+`stop_reason === 'refusal'` → chunk marked `skipped:refusal`, logged.
 
 Rules that matter (in the system prompt):
 1. Emit only what the text states. No inference across sentences unless the connective is explicit.
@@ -428,12 +440,16 @@ schema strict-compatible.
 norm(s) = NFKC → lowercase → collapse whitespace → strip quotes/dashes variants
 find quote: idx = norm(chunk).indexOf(norm(quote))
   if idx < 0: try fuzzy (Levenshtein ratio ≥ 0.92 over a sliding window of |quote| ± 10%)
-  if still not found → REJECT claim (status 'rejected', reason 'quote_not_found')
+  if still not found → REJECT claim (status 'rejected', reason 'quote_not_found')   # HARD
   else span = map normalized offsets back to raw offsets (offset map kept during norm)
-also require: norm(subject.surface) ⊂ norm(quote) ∧ (norm(object.surface) ⊂ norm(quote) ∨ literal ⊂ quote)
-  → else REJECT reason 'mention_not_in_quote'
+mention check (SOFT — decision 2026-08-29):
+  surface_in_quote = norm(mention.surface) ⊂ norm(quote)
+  the claim is kept either way; "Mrs Doe" / "she" / "the firm" are legitimate surfaces when the
+  extractor knows who is meant (mention.name carries the full name). Not-in-quote mentions get
+  confidence × 0.8 and are weighted lower by the resolver (§7.1).
 ```
-Reject rate is a first-class metric (F5); > 8 % on a source triggers re-extraction at higher effort once.
+Rejected claims are stored (`status='rejected'`, reason) so failure modes can be studied. Reject rate is a
+first-class metric (F5); > 8 % on a source triggers re-extraction at higher effort once.
 
 ### 6.5 Classification pre-pass (X2)
 Haiku 4.5, first 1 500 tokens + title + URL → `{page_kind, relevance 0..1, about_focus}`. `relevance < 0.15`

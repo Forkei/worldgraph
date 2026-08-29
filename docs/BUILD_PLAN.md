@@ -31,26 +31,40 @@ is built (a decision that changes the design updates the spec in the same commit
 
 ## M0 — Claim pipeline
 
+**Agreed 2026-08-29 (the maintainer's pushback folded in):** entities wait for M1; quote is a hard gate but the
+mention may be "Mrs Doe"/"she"; ontology is YAML and open-ended (`other{label}` allowed, promoted later);
+relation claims and attribute claims are two tables with shared provenance; fast/cheap models (Sonnet 5,
+Haiku 4.5 benchmarked) with Opus 5 only for re-extraction; Firecrawl is the primary fetcher; governance
+hook is a no-op `unrestricted` policy.
+
 **Creates:** `packages/core` (ontology registry, claim types, Zod schemas), `packages/db` (migrations for
-`workspaces, investigations, sources, claims, cost_ledger, audit_log`), `packages/acquire/fetch` (HTTP +
-Readability, PDF, Firecrawl fallback, archive fallback), `packages/extract` (chunker, prompt, extractor,
-quote gate), `apps/worker` (minimal runner), `wg` CLI (`db:migrate`, `investigate --urls`, `sql`).
+`workspaces, investigations, sources, relation_claims, attribute_claims, cost_ledger, audit_log`),
+`packages/acquire/fetch` (Firecrawl primary, HTTP + Readability / pdf fallback, archive fallback),
+`packages/extract` (chunker, prompt, extractor, quote gate), `apps/worker` (minimal runner), `wg` CLI
+(`db:migrate`, `investigate --urls`, `claims`, `source`, `proposed`, `sql`).
 
 **Tasks**
 1. Repo scaffold: pnpm workspace, TS strict, vitest, eslint; `infra/docker-compose.yml` (postgres 17 + pgvector + AGE, MinIO).
-2. Ontology YAML (§4) + loader + validation; render (a) extraction JSON schema, (b) prompt guide. Unit tests: registry round-trip, domain/range validation.
+2. Ontology YAML (§4) + loader + validation; `other{label}` escape hatch; render (a) extraction JSON schema, (b) prompt guide. Unit tests: registry round-trip, domain/range validation, `other` passthrough.
 3. Migrations for M0 tables (§3.1–3.3, cost, audit).
-4. Fetcher cascade (§5.1) with normalized result; per-domain rate limiter; blob store abstraction (FS).
-5. Chunker (§6.1) with overlap and hash; unit tests on paragraph boundaries.
-6. Extractor: system prompt (cached prefix), structured output via `messages.parse` + Zod, refusal handling, cost capture from `usage`.
-7. Quote gate (§6.4) with offset map; unit tests: exact, whitespace/quote variants, fuzzy accept, reject.
-8. Insert path: validate predicate domain/range, attribute-class floor, `status`, dedupe by `chunk_hash`.
-9. CLI `wg investigate --seed "…" --goal "…" --urls urls.txt` (no planner yet) → fetch→chunk→extract→insert; prints counts, reject rate, $ spent.
+4. Fetcher cascade (§5.1: Firecrawl → HTTP/Readability → archive) with normalized result; per-domain rate limiter; blob store abstraction (FS).
+5. Chunker (§6.1) with overlap and hash; unit tests on paragraph boundaries; overlap dedupe by (subject, predicate, object, quote).
+6. Extractor: system prompt (cached prefix), structured output via `messages.parse` + Zod, per-run `model`/`effort`, refusal handling, cost capture from `usage`.
+7. Quote gate (§6.4) with offset map; hard quote check, soft mention check → `surface_in_quote`; unit tests: exact, whitespace/quote variants, fuzzy accept, reject, "Mrs Doe" accepted.
+8. Insert path: domain/range validation (soft for `other`), attribute-class floor, `status`, dedupe by `chunk_hash`; rejected claims stored with reason.
+9. CLI `wg investigate --seed "…" --goal "…" --urls urls.txt --model sonnet-5|haiku-4-5|opus-5` → fetch→chunk→extract→insert; prints counts, reject rate, `other` proposals, $ spent. `wg claims <inv>` (sample with quotes + URLs), `wg source <id>` (text with spans marked), `wg proposed <inv>` (other types/predicates by frequency).
 10. Governance hook stub: `policy.redact(claim)` with the `unrestricted` policy — wired now so M5 only adds rules.
+11. Model benchmark: same 20 URLs on Sonnet 5 (low, medium) and Haiku 4.5; report claims, reject rate, $ per page, and the maintainer's spot-check score per model.
+
+**Gold seeds for M0 (three tries, decision 2026-08-29):** (1) Person A — public figure, deep footprint;
+(2) the maintainer himself — `unrestricted`, self-audit shape; (3) a surprise public figure with a common name,
+chosen to stress resolution in M1. ~20 curated URLs each.
 
 **Acceptance**
-- Gold seed A (~20 curated URLs): ≥ 150 claims, quote-gate reject rate ≤ 8 %, 0 claims without a resolvable span, cost ≤ $3, re-run is a no-op (chunk hashes).
+- Each seed: ≥ 150 claims, quote-gate reject rate ≤ 8 %, 0 claims without a resolvable span, cost ≤ $3 on the chosen bulk model, re-run is a no-op (chunk hashes).
+- The maintainer spot-checks 30 random claims per seed: ≥ 27 "yes, that's what the page says".
 - `SELECT` can answer "which sources mention org X" and "all claims with predicate works_at" directly.
+- Model benchmark table exists and a bulk model is chosen for M1 onward.
 
 ## M1 — Resolved graph
 
