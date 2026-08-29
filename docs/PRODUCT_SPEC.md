@@ -237,6 +237,6 @@ policy hook points (§5.9), and the plan event log (P7) exist from M0 even when 
 14. **Process:** git repo from day one, small commits, clean and organized; build slowly, checking the vision at each step.
 
 **Open items**
-- *Legal posture (Q10).* Walk through GDPR / CCPA / FCRA / scraping ToS together; then set the default policy and what the product must do for erasure and access requests.
+- *Legal posture (Q10) — parked.* Private personal use for now (household use; `unrestricted` policy, no distribution). Revisit — GDPR basis, erasure, FCRA exclusion, ToS posture — before any second user or any external sharing. The hooks (audit log, redaction points, erasure flow at M5) stay in the design so this can be switched on without rework.
 - *Licensed data-broker connectors.* Interface exists; none enabled until decided.
 - *Graph DB.* Postgres + AGE + pgvector; revisit only if traversal p95 > 200 ms on 100k-edge investigations.
