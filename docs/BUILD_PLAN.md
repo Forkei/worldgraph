@@ -89,6 +89,20 @@ vocabulary; a new feature reads them, it does not reshape them.
    Management LP —manages→ Acorn Capital; Acorn II / III funds are siblings, not merged; Stanford GSB part_of
    Stanford; 9 open identity hypotheses (San Francisco variants, Birch Insurance ↔ Birch, Org X ↔ Org Y).
    Still to do: LLM judge (door 3) on the hypothesis band; gold set + B³ evaluation; the athle.fr test.
+   **✅ LLM judge (door 3) 2026-08-30** — `wg judge <inv>`: each open identity hypothesis is put to a second
+   model family (Claude Haiku 4.5, ~$0.002/pair) with both sides' own facts, identifiers and up to three quotes;
+   it answers same / different / related(kind) / unsure with a reason. Its verdict is **evidence on the
+   hypothesis, never a decision**: the resolver shifts that pair's log-odds by ±4 (a 62 % same-name pair
+   becomes 98 %; a "different" sinks it out of the band), a directed `related` becomes a derived link, and a
+   hard-key conflict still wins over any verdict. Only human decisions are records (migration 0009 removed
+   the earlier `llm` decisions). Lesson from the first run: the judge called Person E-the-athlete and
+   Person E-the-"Chief AI Engineer" *different* on seniority stereotypes — so the prompt now allows
+   'different' on hard contradictions only (identifiers, birth years, places at the same time), and "unsure"
+   is a welcome answer. Result: seed E's four per-source Person E records → 3 same + 3 unsure → **one entity** with
+   both handles and the athle.fr licence; seed A: 37 same-name pairs judged (Person B ×10, Person F,
+   Person G, Person H …) → 265 names → **205 entities, 0 open hypotheses**, the Acorn fund vehicles
+   related (sibling / parent), Person B one entity with 20 claims (founded Acorn Capital, established B1,
+   4 origins). Hypothesis status is re-derived on every rebuild (a superseded decision reopens the pair).
 6. **Decisions + the toolkit**: `decision` table; `ego · paths · intersect · fold · timeline · at · contested ·
    gaps · why · similar` as functions returning bounded, graded subgraphs; `wg dossier/neighbors/why`.
    *Test:* every toolkit call on seed A returns within 300 ms and every edge carries a grade and a why-chain.

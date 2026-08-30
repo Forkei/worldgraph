@@ -8,7 +8,7 @@ import { grade, betterTier, type EvidenceProfile } from "./grade.ts";
 import { intervalHoles } from "./gaps.ts";
 import { loadRuleFiles, slotsFor, type Rule, type EntityView } from "./rules.ts";
 import { tierForClaim, type SourceFacts } from "./reliability.ts";
-import { resolve as resolveEntities, type Provisional, type Decision } from "./resolve.ts";
+import { resolve as resolveEntities, pairKey, type Provisional, type Decision, type PairEvidence } from "./resolve.ts";
 
 interface ClaimRow {
   id: string; kind: "relation" | "attribute"; source_id: string; tier: string | null; origin: string | null; span_method: string | null;
@@ -75,10 +75,12 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   // 1. entities: group mentions by (type, name_norm)
   interface Ent { id: string; type: string; kind: string | null; names: Map<string, number>; aliases: Set<string>; keys: Record<string, Set<string>>; claims: Set<string>; first: string | null; last: string | null }
   const ents = new Map<string, Ent>();
-  const entityOf = (m: Mention, claimId: string, asserted: string | null): string => {
+  // persons are provisional PER SOURCE (a same name across sources is a scored merge or a hypothesis, never assumed);
+  // organizations / places / others group by normalized name across sources.
+  const entityOf = (m: Mention, claimId: string, asserted: string | null, sourceId: string): string => {
     const type = m.type || "artifact";
     const norm = nameNorm(m.name || m.surface, type) || nameNorm(m.surface, type) || "unnamed";
-    const id = stableId(investigationId, type, norm);
+    const id = type === "person" ? stableId(investigationId, type, norm, sourceId) : stableId(investigationId, type, norm);
     let e = ents.get(id);
     if (!e) { e = { id, type, kind: null, names: new Map(), aliases: new Set(), keys: {}, claims: new Set(), first: null, last: null }; ents.set(id, e); }
     const nm = (m.name || m.surface).trim();
@@ -94,12 +96,12 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   const rel = rows.filter((r) => r.kind === "relation"), attr = rows.filter((r) => r.kind === "attribute");
   const relMap = new Map<string, { src: string; dst: string }>();
   for (const r of rel) {
-    const src = entityOf(r.subject!, r.id, r.asserted_at), dst = entityOf(r.object!, r.id, r.asserted_at);
+    const src = entityOf(r.subject!, r.id, r.asserted_at, r.source_id), dst = entityOf(r.object!, r.id, r.asserted_at, r.source_id);
     relMap.set(r.id, { src, dst });
     claimEnts.push({ claim_id: r.id, claim_kind: "relation", role: "subject", entity_id: src }, { claim_id: r.id, claim_kind: "relation", role: "object", entity_id: dst });
   }
   const attrMap = new Map<string, string>();
-  for (const a of attr) { const e = entityOf(a.entity!, a.id, a.asserted_at); attrMap.set(a.id, e); claimEnts.push({ claim_id: a.id, claim_kind: "attribute", role: "entity", entity_id: e }); }
+  for (const a of attr) { const e = entityOf(a.entity!, a.id, a.asserted_at, a.source_id); attrMap.set(a.id, e); claimEnts.push({ claim_id: a.id, claim_kind: "attribute", role: "entity", entity_id: e }); }
 
   // 1a. resolution: provisional (exact-name) entities → clusters, using decisions (records) and scores
   const neighborsOf = new Map<string, Set<string>>();
@@ -109,7 +111,12 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     keys: Object.fromEntries(Object.entries(e.keys).map(([k, v]) => [k, [...v]])), neighbors: neighborsOf.get(e.id) ?? new Set(), claim_count: e.claims.size,
   }));
   const decisions = (await query<Decision & { a_id: string; b_id: string }>(`SELECT a_id, b_id, verdict, related_kind FROM resolution_decisions WHERE investigation_id=$1 AND superseded_by IS NULL`, [investigationId]));
-  const res = resolveEntities(provisional, decisions);
+  const evidence: PairEvidence = new Map();
+  for (const h of await query<{ a: string; b: string; ev: { kind: string; verdict?: string; related_kind?: string | null }[] }>(`SELECT pattern->>'a_id' a, pattern->>'b_id' b, evidence ev FROM hypotheses WHERE investigation_id=$1 AND kind='identity'`, [investigationId])) {
+    const last = [...(h.ev ?? [])].reverse().find((e) => e.kind === "llm" && e.verdict && e.verdict !== "unsure");
+    if (last) evidence.set(pairKey(h.a, h.b), { verdict: last.verdict as "same" | "different" | "related", kind: last.related_kind ?? null, a: h.a });
+  }
+  const res = resolveEntities(provisional, decisions, evidence);
   // canonical id per cluster = member with most claims (ties: smaller id); remap every provisional id → canonical
   const clusterMembers = new Map<string, Ent[]>();
   for (const e of ents.values()) { const root = res.clusters.get(e.id)!; (clusterMembers.get(root) ?? clusterMembers.set(root, []).get(root)!).push(e); }
@@ -227,7 +234,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
         `INSERT INTO hypotheses (id, investigation_id, kind, exclusion_group, pattern, evidence, status, score)
          VALUES ($1,$2,'identity',$3,$4,$5,'open',$6)
          ON CONFLICT (investigation_id, (pattern->>'a_id'), (pattern->>'b_id')) WHERE kind='identity'
-         DO UPDATE SET score=EXCLUDED.score, evidence=EXCLUDED.evidence, updated_at=now()`,
+         DO UPDATE SET status='open', decided_by=NULL, score=EXCLUDED.score, evidence=COALESCE((SELECT jsonb_agg(e) FROM jsonb_array_elements(hypotheses.evidence) e WHERE e->>'kind' <> 'score'), '[]'::jsonb) || EXCLUDED.evidence, updated_at=now()`,
         [uuidv7(), investigationId, `identity:${h.a}`, JSON.stringify({ a_id: h.a, b_id: h.b, a_name: provName.get(h.a), b_name: provName.get(h.b), type: provType.get(h.a) }), JSON.stringify([{ kind: "score", features: h.features }]), h.p],
       );
     }
@@ -263,6 +270,9 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
         else if (quals[k] !== v) { (conflicts[k] ??= [{ value: quals[k]!, claim_ids: [] }]); const ex = conflicts[k]!.find((x) => x.value === v); if (ex) ex.claim_ids.push(r.id); else conflicts[k]!.push({ value: v, claim_ids: [r.id] }); }
       }
       const id = stableId(investigationId, "link", g.src, g.predicate, g.specific ?? "", g.dst);
+      // a claim-backed link replaces a resolver-derived one with the same shape
+      await c.query(`DELETE FROM links WHERE id=$1 AND derived`, [id]);
+      await c.query(`DELETE FROM justifications WHERE derived_kind='link' AND derived_id=$1`, [id]);
       await c.query(
         `INSERT INTO links (id, investigation_id, src_id, predicate, predicate_specific, dst_id, qualifiers, qualifier_conflicts, claim_ids, evidence_count, independent_origins, primary_origins, tier_best, contested, reliability, credibility, grade,
            temporal_kind, valid_from_lo, valid_from_hi, valid_to_lo, valid_to_hi, date_lo, date_hi, first_asserted, last_asserted)

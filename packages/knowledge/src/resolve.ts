@@ -15,6 +15,12 @@ export interface Decision { a_id: string; b_id: string; verdict: "same" | "not_s
 export interface PairScore { a: string; b: string; score: number; p: number; features: Record<string, number | string | boolean>; verdict: "same" | "hypothesis" | "not_same" | "related" | "none"; related_kind?: string }
 
 export const AUTO_SAME = 0.95, HYPOTHESIS = 0.6;
+export const PRIOR = -6;
+/** Soft evidence on a pair from an LLM judge (door 3): shifts the score, never decides. */
+/** `a` names the side the judge saw as "A" so directional kinds (parent, part_of, manages) read the right way round. */
+export type PairEvidence = Map<string, { verdict: "same" | "different" | "related"; kind?: string | null; a?: string }>;
+export const EVIDENCE_WEIGHT = 4;
+export const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 
 const HARD_KEYS = ["email", "phone", "handle", "url", "orcid", "licence", "registry_id", "domain", "docket", "parcel_id", "identifier"];
 const STRUCTURE_TOKENS = new Set(["management", "fund", "funds", "holdings", "trust", "foundation", "partners", "advisors", "advisers", "gp", "capital"]);
@@ -123,19 +129,34 @@ export function scorePair(a: Provisional, b: Provisional, idf: Map<string, numbe
     const ia = initialism(a.name_norm), ib = initialism(b.name_norm);
     if ((ia.length >= 3 && ia === b.name_norm.replace(/\s/g, "")) || (ib.length >= 3 && ib === a.name_norm.replace(/\s/g, ""))) { f.initialism = true; initialismHit = true; w += 9; }
   }
-  if (jw >= 0.92) w += 4; else if (jw >= 0.85) w += 1.5; else if (jw < 0.6 && !shared.length && !initialismHit) w -= 4;
-  w += 3 * (f.token_overlap as number) + Math.min(4, sharedIdf * 0.8);       // rare shared tokens count more
   if (a.type === "person") {
-    // same surname + same first initial is a weak signal; full name equality was already exact-grouped
+    // A person's name alone is never identity (research 02/13): identical full names across sources land in the
+    // hypothesis band; shared context (co-mentioned entities) or a hard key lifts them to a merge.
+    if (a.name_norm === b.name_norm) { f.exact_name = true; w += 6.5; }
+    else if (jw >= 0.92) w += 4; else if (jw >= 0.85) w += 1.5; else if (jw < 0.6 && !shared.length) w -= 4;
     const la = ta.at(-1), lb = tb.at(-1);
     if (la && la === lb && ta[0]?.[0] === tb[0]?.[0] && ta[0] !== tb[0]) { f.surname_initial = true; w += 1; }
+  } else {
+    if (jw >= 0.92) w += 4; else if (jw >= 0.85) w += 1.5; else if (jw < 0.6 && !shared.length && !initialismHit) w -= 4;
+    w += 3 * (f.token_overlap as number) + Math.min(4, sharedIdf * 0.8);       // rare shared tokens count more
   }
   const nb = [...a.neighbors].filter((n) => b.neighbors.has(n)).length;
   const nu = new Set([...a.neighbors, ...b.neighbors]).size;
   f.context_jaccard = Number((nu ? nb / nu : 0).toFixed(3));
-  if (nb >= 1) w += Math.min(4, 1.5 * nb);
-  const prior = -6;                                  // most pairs are not the same
-  const p = 1 / (1 + Math.exp(-(w + prior)));
+  f.shared_neighbors = nb;
+  if (nb >= 1) w += Math.min(5, 2.5 * nb);        // same full name + one corroborating entity ⇒ merge (research 02 §7.1)
+  // context alone never creates a candidate: some name signal (near-identical name, alias structure,
+  // initialism, a shared rare token, or a hard key) is required — otherwise "University of Arizona" and
+  // "Stanford University" would pair up just because both link to the same person.
+  const rareCut = Math.log((idf.size + 1) / 2.5);   // a token seen in ≤ 2 names of the corpus
+  const rareShared = shared.some((t) => (idf.get(t) ?? 0) >= rareCut);
+  const nameSignal = hk === "match" || f.exact_name === true
+    || (a.type === "person" ? jw >= 0.8
+      : a.type === "organization" ? (jw >= 0.8 || f.org_structure === "alias" || initialismHit || rareShared)
+      : jw >= 0.85);                                   // events, documents, credentials, places: names are specific
+  f.name_signal = nameSignal;
+  const prior = PRIOR;                               // most pairs are not the same
+  const p = nameSignal ? 1 / (1 + Math.exp(-(w + prior))) : 0;
   f.weight = Number(w.toFixed(2));
   const verdict = p >= AUTO_SAME ? "same" : p >= HYPOTHESIS ? "hypothesis" : "none";
   return { a: a.id, b: b.id, score: w, p: Number(p.toFixed(4)), features: f, verdict };
@@ -167,7 +188,25 @@ export function candidatePairs(ents: Provisional[], idf: Map<string, number>): [
 export interface ResolveResult { clusters: Map<string, string>; merges: PairScore[]; hypotheses: PairScore[]; related: PairScore[]; guarded: PairScore[] }
 
 /** Score all candidate pairs, apply decisions, cluster with union-find and a hard-key contradiction guard. */
-export function resolve(ents: Provisional[], decisions: Decision[]): ResolveResult {
+export function withEvidence(s: PairScore, ev?: PairEvidence): PairScore {
+  const e = ev?.get(pairKey(s.a, s.b));
+  if (!e || s.verdict === "not_same" || s.verdict === "related" || s.features.name_signal === false) return s;
+  // the judge phrases the relation from A's side: "A manages B", "A part_of B", "A parent of B", "A subsidiary of B"
+  if (e.verdict === "related" && e.kind && e.kind !== "alias" && e.kind !== "namesake") {
+    const k = e.kind === "parent" ? "part_of" : e.kind === "subsidiary" ? "part_of" : e.kind;
+    const A = e.a ?? s.a, B = A === s.a ? s.b : s.a;
+    const related_src = e.kind === "parent" ? B : A;          // "A is parent of B" ⇒ B part_of A
+    return { ...s, p: 0, verdict: "related", related_kind: k, features: { ...s.features, llm: e.verdict + ":" + e.kind, related_src } };
+  }
+  const v = e.verdict === "related" ? (e.kind === "alias" ? "same" : "different") : e.verdict;
+  const delta = v === "same" ? EVIDENCE_WEIGHT : -EVIDENCE_WEIGHT;
+  const score = s.score + delta;
+  const p = 1 / (1 + Math.exp(-(score + PRIOR)));
+  const verdict = p >= AUTO_SAME ? "same" : p >= HYPOTHESIS ? "hypothesis" : "none";
+  return { ...s, score, p: Number(p.toFixed(4)), verdict, features: { ...s.features, llm: v } };
+}
+
+export function resolve(ents: Provisional[], decisions: Decision[], evidence?: PairEvidence): ResolveResult {
   const idf = tokenIdf(ents);
   const byId = new Map(ents.map((e) => [e.id, e]));
   const decided = new Map(decisions.map((d) => [`${d.a_id}|${d.b_id}`, d]));
@@ -190,11 +229,13 @@ export function resolve(ents: Provisional[], decisions: Decision[]): ResolveResu
     for (const [k, vs] of Object.entries(kd)) for (const v of vs) (kk[k] ??= new Set()).add(v);
     return true;
   };
-  const merges: PairScore[] = [], hypotheses: PairScore[] = [], related: PairScore[] = [], guarded: PairScore[] = [];
+  const merges: PairScore[] = [], related: PairScore[] = [], guarded: PairScore[] = [];
+  let hypotheses: PairScore[] = [];
   // 1. decisions first (records win)
   for (const d of decisions) if (d.verdict === "same") union(d.a_id, d.b_id);
   // 2. scored pairs
-  const scored = candidatePairs(ents, idf).map(([a, b]) => scorePair(a, b, idf)).sort((x, y) => y.p - x.p);
+  const pairs = candidatePairs(ents, idf);
+  const scored = pairs.map(([a, b]) => withEvidence(scorePair(a, b, idf), evidence)).sort((x, y) => y.p - x.p);
   for (const s of scored) {
     const d = decided.get(`${s.a}|${s.b}`);
     if (d) { if (d.verdict === "related") related.push({ ...s, verdict: "related", related_kind: d.related_kind ?? undefined }); continue; }
@@ -202,8 +243,26 @@ export function resolve(ents: Provisional[], decisions: Decision[]): ResolveResu
     if (s.verdict === "same") { if (union(s.a, s.b)) merges.push(s); else guarded.push(s); }
     else if (s.verdict === "hypothesis") hypotheses.push(s);
   }
+  // 3. collective pass (Bhattacharya & Getoor): merged clusters pool their neighbourhoods; re-score the
+  //    hypothesis band with cluster-level context until nothing more crosses the line.
+  for (let round = 0; round < 6 && hypotheses.length; round++) {
+    const clusterNeighbors = new Map<string, Set<string>>();
+    for (const e of ents) { const r = find(e.id); const set = clusterNeighbors.get(r) ?? clusterNeighbors.set(r, new Set()).get(r)!; for (const n of e.neighbors) set.add(find(n)); }
+    const withCtx = (e: Provisional): Provisional => ({ ...e, neighbors: clusterNeighbors.get(find(e.id)) ?? new Set() });
+    const next: PairScore[] = [];
+    let changed = false;
+    for (const h of hypotheses) {
+      const a = byId.get(h.a)!, b = byId.get(h.b)!;
+      if (find(a.id) === find(b.id)) continue;                        // already together via another pair
+      const s = withEvidence(scorePair(withCtx(a), withCtx(b), idf), evidence);
+      if (s.verdict === "same") { if (union(s.a, s.b)) { merges.push({ ...s, features: { ...s.features, collective_round: round + 1 } }); changed = true; } else guarded.push(s); }
+      else if (s.verdict === "hypothesis") next.push(s);
+    }
+    hypotheses = next;
+    if (!changed) break;
+  }
+  hypotheses = hypotheses.filter((h) => find(h.a) !== find(h.b));
   const clusters = new Map<string, string>();
   for (const e of ents) clusters.set(e.id, find(e.id));
-  void byId;
   return { clusters, merges, hypotheses, related, guarded };
 }

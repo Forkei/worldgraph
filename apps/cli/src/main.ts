@@ -9,7 +9,7 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource } from "@worldgraph/extract";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource, judgePair, type Side } from "@worldgraph/extract";
 import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -49,6 +49,7 @@ async function main() {
     case "decide": return decide(sub ?? s("inv"), rest[0], rest[1], rest[2]);
     case "unmerge": return unmerge(sub ?? s("inv"), rest[0]);
     case "merges": return merges(sub ?? s("inv"));
+    case "judge": return judge(sub ?? s("inv"));
     case "entities": return entities(sub ?? s("inv"));
     case "dossier": return dossier(sub ?? s("inv"), rest[0]);
     case "gaps": return gaps(sub ?? s("inv"));
@@ -74,6 +75,7 @@ async function main() {
   wg merges <inv>                entities assembled from several names; related-not-merged pairs
   wg candidates <inv>            open identity hypotheses (the uncertain band)
   wg decide <inv> <a> <b> same|not_same|related:<kind>
+  wg judge <inv> [--limit 20]    LLM door 3: judge open identity hypotheses from both sides' evidence
   wg unmerge <inv> "<name|id>"   split an entity back into its members (records not_same decisions)
   wg entities <inv> [--type person] [--limit 40]
   wg dossier <inv> "<name|id>"   one entity: keys, attributes, links (graded), slots
@@ -348,6 +350,43 @@ async function merges(id?: string) {
   for (const r of rows) console.log(`${r.type.padEnd(12)} ${r.name.padEnd(34)} = ${r.members.join(" | ")}`);
   const rel = await query<{ a: string; b: string; predicate: string; derivation: string }>(`SELECT s.canonical_name a, d.canonical_name b, l.predicate || coalesce(' ' || l.predicate_specific, '') predicate, l.derivation FROM links l JOIN entities s ON s.id=l.src_id JOIN entities d ON d.id=l.dst_id WHERE l.investigation_id=$1 AND l.derived ORDER BY l.predicate, a LIMIT $2`, [inv.id, Number(s("limit") ?? 40)]);
   if (rel.length) { console.log("\nrelated, not merged (derived links):"); for (const r of rel) console.log(`  ${r.a} —${r.predicate}→ ${r.b}`); }
+}
+
+async function sideFor(invId: string, provisionalId: string): Promise<Side> {
+  const [m] = await query<{ entity_id: string; name: string }>(`SELECT entity_id, name FROM entity_members WHERE provisional_id=$1`, [provisionalId]);
+  if (!m) return { name: "?", type: "?", kind: null, aliases: [], keys: {}, facts: [], quotes: [] };
+  // describe only the claims that belong to THIS provisional member (its own pages), not the whole merged entity
+  const claimIds = await query<{ claim_id: string; claim_kind: string; role: string }>(`SELECT ce.claim_id, ce.claim_kind, ce.role FROM claim_entities ce WHERE ce.entity_id=$1`, [m.entity_id]);
+  const rel = await query<Record<string, any>>(
+    `SELECT c.predicate, c.qualifiers, c.subject->>'name' s, c.object->>'name' o, c.subject->>'type' st, c.object->>'type' ot, c.subject->>'hints' sh, c.object->>'hints' oh, c.quote, c.valid_from_edtf vf, c.valid_to_edtf vt, src.domain
+       FROM relation_claims c JOIN sources src ON src.id=c.source_id WHERE c.id = ANY($1::uuid[]) AND c.status='raw'`, [claimIds.filter((c) => c.claim_kind === "relation").map((c) => c.claim_id)]);
+  const attr = await query<Record<string, any>>(`SELECT c.key, c.value, c.entity->>'name' n, c.quote, src.domain FROM attribute_claims c JOIN sources src ON src.id=c.source_id WHERE c.id = ANY($1::uuid[]) AND c.status='raw'`, [claimIds.filter((c) => c.claim_kind === "attribute").map((c) => c.claim_id)]);
+  const [e] = await query<{ type: string; kind: string | null; aliases: string[]; identity_keys: Record<string, string[]> }>(`SELECT type, kind, aliases, identity_keys FROM entities WHERE id=$1`, [m.entity_id]);
+  const facts: string[] = [], quotes: string[] = [];
+  const q = (x: Record<string, any>) => x.qualifiers && Object.keys(x.qualifiers).length ? " {" + Object.entries(x.qualifiers).map(([k, v]) => `${k}: ${v}`).join(", ") + "}" : "";
+  for (const r of rel) { facts.push(`${r.s} —${r.predicate}→ ${r.o}${q(r)}${r.vf || r.vt ? ` ${r.vf ?? "?"}→${r.vt ?? "…"}` : ""} (${r.domain})`); if (quotes.length < 3) quotes.push(`${String(r.quote).replace(/\s+/g, " ").slice(0, 160)} — ${r.domain}`); }
+  for (const a of attr) facts.push(`${a.n} · ${a.key} = ${a.value} (${a.domain})`);
+  return { name: m.name, type: e?.type ?? "?", kind: e?.kind ?? null, aliases: (e?.aliases ?? []).filter((x) => x !== m.name).slice(0, 5), keys: e?.identity_keys ?? {}, facts, quotes };
+}
+
+async function judge(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg judge <inv> [--limit 20]");
+  const rows = await query<{ id: string; pattern: any; score: number }>(`SELECT id, pattern, score FROM hypotheses WHERE investigation_id=$1 AND kind='identity' AND status='open' ORDER BY score DESC LIMIT $2`, [inv.id, Number(s("limit") ?? 20)]);
+  let usd = 0, decided = 0;
+  for (const h of rows) {
+    const a = await sideFor(inv.id, h.pattern.a_id), b = await sideFor(inv.id, h.pattern.b_id);
+    const { v, usd: u } = await judgePair(a, b);
+    usd += u;
+    const tag = v.verdict === "same" ? "SAME     " : v.verdict === "different" ? "DIFFERENT" : v.verdict === "related" ? `RELATED:${v.related_kind}` : "unsure   ";
+    console.log(`${tag}  ${a.name}  ↔  ${b.name}\n           ${v.reason}${v.decisive_evidence ? "  [" + v.decisive_evidence.slice(0, 120) + "]" : ""}`);
+    // evidence on the hypothesis, never a decision: the resolver shifts the pair's score by it (±4); humans decide
+    await query(`UPDATE hypotheses SET evidence = evidence || $2::jsonb, updated_at=now() WHERE id=$1`, [h.id, JSON.stringify([{ kind: "llm", verdict: v.verdict, related_kind: v.related_kind || null, reason: v.reason, decisive: v.decisive_evidence || null, at: new Date().toISOString() }])]);
+    if (v.verdict !== "unsure") decided++;
+  }
+  console.log(`
+judged ${rows.length} pairs · ${decided} with a verdict (recorded as evidence, weight ±4) · $${usd.toFixed(4)}`);
+  if (decided) await rebuildCmd(inv.id);
 }
 
 async function investigations() {
