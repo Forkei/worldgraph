@@ -264,10 +264,10 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
 
     for (const g of linkAgg.values()) {
       const p = profile(g, false), gr = grade(p), t = timeAgg(g.rows);
-      const quals: Record<string, string> = {}, conflicts: Record<string, { value: string; claim_ids: string[] }[]> = {};
+      const quals: Record<string, string> = {}, firstBy: Record<string, string> = {}, conflicts: Record<string, { value: string; claim_ids: string[] }[]> = {};
       for (const r of g.rows) for (const [k, v] of Object.entries(r.qualifiers ?? {})) {
-        if (!(k in quals)) quals[k] = v;
-        else if (quals[k] !== v) { (conflicts[k] ??= [{ value: quals[k]!, claim_ids: [] }]); const ex = conflicts[k]!.find((x) => x.value === v); if (ex) ex.claim_ids.push(r.id); else conflicts[k]!.push({ value: v, claim_ids: [r.id] }); }
+        if (!(k in quals)) { quals[k] = v; firstBy[k] = r.id; }
+        else if (quals[k] !== v) { (conflicts[k] ??= [{ value: quals[k]!, claim_ids: [firstBy[k]!] }]); const ex = conflicts[k]!.find((x) => x.value === v); if (ex) ex.claim_ids.push(r.id); else conflicts[k]!.push({ value: v, claim_ids: [r.id] }); }
       }
       const id = stableId(investigationId, "link", g.src, g.predicate, g.specific ?? "", g.dst);
       // a claim-backed link replaces a resolver-derived one with the same shape

@@ -10,7 +10,7 @@ import {
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource, judgePair, type Side } from "@worldgraph/extract";
-import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles } from "@worldgraph/knowledge";
+import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
 const flags = parseArgs({
@@ -22,6 +22,7 @@ const flags = parseArgs({
     urls: { type: "string" }, url: { type: "string", multiple: true }, inv: { type: "string" }, model: { type: "string", default: DEFAULT_MODEL },
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
+    pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -50,6 +51,16 @@ async function main() {
     case "unmerge": return unmerge(sub ?? s("inv"), rest[0]);
     case "merges": return merges(sub ?? s("inv"));
     case "judge": return judge(sub ?? s("inv"));
+    case "ego": case "neighbors": return egoCmd(sub ?? s("inv"), rest[0], rest[1]);
+    case "paths": return pathsCmd(sub ?? s("inv"), rest[0], rest[1], rest[2]);
+    case "intersect": return intersectCmd(sub ?? s("inv"), rest[0], rest[1]);
+    case "fold": return foldCmd(sub ?? s("inv"), rest[0]);
+    case "timeline": return timelineCmd(sub ?? s("inv"), rest[0]);
+    case "at": return atCmd(sub ?? s("inv"), rest[0], rest[1]);
+    case "contested": return contestedCmd(sub ?? s("inv"), rest[0]);
+    case "similar": return similarCmd(sub ?? s("inv"), rest[0]);
+    case "why": return whyCmd(sub ?? s("inv"), rest[0]);
+    case "decisions": return decisionsCmd(sub ?? s("inv"));
     case "entities": return entities(sub ?? s("inv"));
     case "dossier": return dossier(sub ?? s("inv"), rest[0]);
     case "gaps": return gaps(sub ?? s("inv"));
@@ -80,6 +91,15 @@ async function main() {
   wg entities <inv> [--type person] [--limit 40]
   wg dossier <inv> "<name|id>"   one entity: keys, attributes, links (graded), slots
   wg gaps <inv>                  open slots (what is missing)
+  wg ego <inv> "<ref>" [hops]    neighbourhood, best-graded edges first [--pred a,b] [--at date] [--min-grade g] [--limit n]
+  wg paths <inv> "<a>" "<b>" [max]   shortest routes between two entities, weakest grade shown
+  wg intersect <inv> "<a>" "<b>" [--on type] [--hops 1]   what two neighbourhoods share
+  wg fold <inv> person-works_at-organization-works_at-person [--from ref]   meta-path pairs
+  wg timeline <inv> "<ref>"      dated edges in order; wg at <inv> "<ref>" <date>   the world as of one day
+  wg contested <inv> [ref]       competing facts and qualifier disagreements
+  wg similar <inv> "<ref>"       entities sharing a neighbourhood
+  wg why <inv> <link-id|"ref">   the justification chain down to quotes and pages
+  wg decisions <inv>             the decisions log
   wg rules [sync]                list rules / load YAML rules into the table
   wg tiers [<pattern> <tier>]    list or set source reliability tiers
   wg sql "<select ...>"`);
@@ -101,6 +121,7 @@ async function investigate() {
     if (!s("seed") || !s("goal")) fail("--seed and --goal are required for a new investigation");
     inv = await createInvestigation({ title: s("title") ?? `${s("seed")} — ${s("goal")!.slice(0, 60)}`, seed: { kind: s("kind") ?? "person", name: s("seed")!, hints: {} }, goal_text: s("goal")!, policy: policy.name });
     await audit({ investigation_id: inv.id, actor: "cli", action: "investigation.create", detail: { seed: inv.seed, goal: inv.goal_text, policy: policy.name } });
+    await recordDecision(inv.id, { actor: "human", kind: "scope", subject: { seed: inv.seed, policy: policy.name }, rationale: `seed "${s("seed")}" (${s("kind") ?? "person"}) · goal: ${inv.goal_text} · ${urlList.length} starting URLs · policy ${policy.name}` });
     console.log(`investigation ${short(inv.id)} created: ${inv.title}`);
   } else {
     console.log(`investigation ${short(inv.id)}: ${inv.title}`);
@@ -322,6 +343,7 @@ async function decide(id?: string, a?: string, b?: string, verdictRaw?: string) 
   await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [newId, inv.id, pa, pb]);
   await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, related_kind, method, note) VALUES ($1,$2,$3,$4,$5,$6,'human',$7)`, [newId, inv.id, pa, pb, verdict, kind ?? null, s("note") ?? null]);
   await audit({ investigation_id: inv.id, actor: "human", action: "resolution.decide", detail: { a: pa, b: pb, verdict, kind } });
+  await recordDecision(inv.id, { actor: "human", kind: verdict === "same" ? "merge" : "split", subject: { a: pa, b: pb, verdict, kind }, rationale: `${a} ${verdict}${kind ? ":" + kind : ""} ${b}${s("note") ? " — " + s("note") : ""}`, inputs: [{ kind: "decision", id: newId }], reversible_by: "wg decide / wg unmerge" });
   console.log(`decision recorded: ${short(pa)} ${verdict}${kind ? ":" + kind : ""} ${short(pb)} — rebuilding`);
   await rebuildCmd(inv.id);
 }
@@ -339,6 +361,7 @@ async function unmerge(id?: string, ref?: string) {
     await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, method, note) VALUES ($1,$2,$3,$4,'not_same','human','unmerge')`, [newId, inv.id, pa, pb]);
   }
   await audit({ investigation_id: inv.id, actor: "human", action: "resolution.unmerge", detail: { entity: eid, members: members.map((m) => m.name) } });
+  await recordDecision(inv.id, { actor: "human", kind: "split", subject: { entity: eid, members: members.map((m) => m.provisional_id) }, rationale: `un-merged ${members.map((m) => m.name).join(" | ")}`, reversible_by: "wg decide <a> <b> same" });
   console.log(`un-merged ${members.map((m) => m.name).join(" | ")} — rebuilding`);
   await rebuildCmd(inv.id);
 }
@@ -384,9 +407,156 @@ async function judge(id?: string) {
     await query(`UPDATE hypotheses SET evidence = evidence || $2::jsonb, updated_at=now() WHERE id=$1`, [h.id, JSON.stringify([{ kind: "llm", verdict: v.verdict, related_kind: v.related_kind || null, reason: v.reason, decisive: v.decisive_evidence || null, at: new Date().toISOString() }])]);
     if (v.verdict !== "unsure") decided++;
   }
+  if (rows.length) await recordDecision(inv.id, { actor: "llm", kind: "refer", subject: { hypotheses: rows.map((h) => h.id) }, rationale: `judged ${rows.length} identity pairs: ${decided} verdicts recorded as evidence (${usd.toFixed(4)} USD)`, reversible_by: "wg decide" });
   console.log(`
 judged ${rows.length} pairs · ${decided} with a verdict (recorded as evidence, weight ±4) · $${usd.toFixed(4)}`);
   if (decided) await rebuildCmd(inv.id);
+}
+
+// ---- the toolkit (model §4.4) ----
+const gradeTag = (l: { grade: string; reliability: string; credibility: number; independent_origins: number; evidence_count: number; derived?: boolean }) =>
+  l.derived ? "derived" : `${l.grade} ${l.reliability}${l.credibility} · ${l.independent_origins}o/${l.evidence_count}c`;
+const linkLine = (g: Graph, l: GLink, from?: string) => {
+  const a = g.entities.get(l.src)?.name ?? short(l.src), bn = g.entities.get(l.dst)?.name ?? short(l.dst);
+  const arrow = from && l.dst === from ? `${bn} ←${l.predicate}— ${a}` : `${a} —${l.predicate}${l.predicate_specific ? "[" + l.predicate_specific + "]" : ""}→ ${bn}`;
+  return `${arrow}${qualStr(l.qualifiers)}${timeStr(l)}   ${gradeTag(l)}   ${short(l.id)}`;
+};
+const printSub = (g: Graph, sub: Subgraph, from?: string) => {
+  for (const l of sub.links) console.log("  " + linkLine(g, l, from));
+  console.log(`  — ${sub.entities.length} entities · ${sub.links.length} links${sub.truncated ? " · TRUNCATED (raise --limit)" : ""}`);
+};
+const gradeOrder = ["established", "corroborated", "single_source", "unverified", "disputed"];
+async function loaded(id?: string, ref?: string, usage = "", needRef = usage.includes('"<ref>"')) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || (needRef && !ref)) return fail(usage || "wg <cmd> <inv>");
+  const t0 = Date.now();
+  const g = await loadGraph(inv.id);
+  const eid = ref ? await findEntity(inv.id, ref) : undefined;
+  return { inv, g, eid: eid!, ms: Date.now() - t0 };
+}
+const preds = () => (s("pred") ? s("pred")!.split(",").map((x) => x.trim()).filter(Boolean) : undefined);
+
+async function egoCmd(id?: string, ref?: string, hopsRaw?: string) {
+  const { g, eid, ms } = await loaded(id, ref, 'wg ego <inv> "<ref>" [hops] [--pred works_at,board_member] [--at 2019-01-01] [--min-grade corroborated] [--limit 200]');
+  const hops = Number(hopsRaw ?? 1);
+  const t0 = Date.now();
+  const sub = ego(g, eid, hops, { predicates: preds(), asOf: s("at"), minGrade: s("min-grade"), limit: Number(s("limit") ?? 200) });
+  console.log(`ego(${g.entities.get(eid)?.name}, ${hops} hop${hops === 1 ? "" : "s"})  [load ${ms} ms · op ${Date.now() - t0} ms]`);
+  printSub(g, sub, eid);
+}
+
+async function pathsCmd(id?: string, a?: string, bRef?: string, maxRaw?: string) {
+  const { g, eid, inv, ms } = await loaded(id, a, 'wg paths <inv> "<ref>" "<ref>" [max=3] [--pred ...] [--limit 20]');
+  if (!bRef) return fail("need two entity refs");
+  const bid = await findEntity(inv.id, bRef);
+  const t0 = Date.now();
+  const r = paths(g, eid, bid, Number(maxRaw ?? 3), { predicates: preds(), limit: Number(s("limit") ?? 20) });
+  console.log(`paths(${g.entities.get(eid)?.name} → ${g.entities.get(bid)?.name}, ≤${maxRaw ?? 3})  ${r.paths.length} found  [load ${ms} ms · op ${Date.now() - t0} ms]${r.sub.truncated ? "  TRUNCATED" : ""}`);
+  for (const p of r.paths) {
+    const parts = [g.entities.get(p.nodes[0]!)?.name];
+    p.links.forEach((l, i) => { const from = p.nodes[i]!; parts.push(l.src === from ? ` —${l.predicate}→ ` : ` ←${l.predicate}— `, g.entities.get(p.nodes[i + 1]!)?.name); });
+    const worst = p.links.reduce((w, l) => Math.max(w, gradeOrder.indexOf(l.grade)), 0);
+    console.log(`  ${parts.join("")}   [weakest: ${gradeOrder[worst]}]`);
+  }
+}
+
+async function intersectCmd(id?: string, a?: string, bRef?: string) {
+  const { g, eid, inv, ms } = await loaded(id, a, 'wg intersect <inv> "<ref>" "<ref>" [--on organization] [--hops 1]');
+  if (!bRef) return fail("need two entity refs");
+  const bid = await findEntity(inv.id, bRef);
+  const hops = Number(s("hops") ?? 1);
+  const t0 = Date.now();
+  const sub = intersect(ego(g, eid, hops), ego(g, bid, hops), s("on"));
+  console.log(`intersect(ego ${g.entities.get(eid)?.name}, ego ${g.entities.get(bid)?.name}${s("on") ? ", on " + s("on") : ""})  [load ${ms} ms · op ${Date.now() - t0} ms]`);
+  for (const e of sub.entities.filter((e) => !s("on") || e.type === s("on"))) if (e.id !== eid && e.id !== bid) console.log(`  ${e.type.padEnd(13)} ${e.name}`);
+  printSub(g, sub);
+}
+
+async function foldCmd(id?: string, meta?: string) {
+  const { g, ms, inv } = await loaded(id, undefined, "wg fold <inv> person-works_at-organization-works_at-person [--from <ref>] [--limit 200]", false);
+  if (!meta) return fail("give a meta-path: type-predicate-type[-predicate-type…]  (* = any)");
+  const from = s("from") ? await findEntity(inv.id, s("from")!) : undefined;
+  const t0 = Date.now();
+  const r = fold(g, meta.split("-"), { limit: Number(s("limit") ?? 200), from });
+  console.log(`fold(${meta})  ${r.folds.length} pairs  [load ${ms} ms · op ${Date.now() - t0} ms]${r.sub.truncated ? "  TRUNCATED" : ""}`);
+  for (const f of r.folds) {
+    const worst = f.links.reduce((w, l) => Math.max(w, gradeOrder.indexOf(l.grade)), 0);
+    console.log(`  ${g.entities.get(f.a)?.name}  ~  ${g.entities.get(f.b)?.name}   via ${f.via.map((v) => g.entities.get(v)?.name).join(" / ")}   [weakest: ${gradeOrder[worst]}]`);
+  }
+}
+
+async function timelineCmd(id?: string, ref?: string) {
+  const { g, eid, ms } = await loaded(id, ref, 'wg timeline <inv> "<ref>"');
+  const t0 = Date.now();
+  const rows = timeline(g, eid);
+  console.log(`timeline(${g.entities.get(eid)?.name})  [load ${ms} ms · op ${Date.now() - t0} ms]`);
+  for (const r of rows) console.log(`  ${(r.at ?? "undated").padEnd(10)} ${(r.until ? "→ " + r.until : r.link.date_lo ? "" : r.at ? "→ …" : "").padEnd(14)} ${r.fuzzy ? "~" : " "} ${linkLine(g, r.link, eid)}`);
+}
+
+async function atCmd(id?: string, ref?: string, t?: string) {
+  const { g, eid, ms } = await loaded(id, ref, 'wg at <inv> "<ref>" <YYYY-MM-DD>');
+  if (!t) return fail("give a date");
+  const t0 = Date.now();
+  const r = at(g, eid, t);
+  console.log(`at(${g.entities.get(eid)?.name}, ${t})  [load ${ms} ms · op ${Date.now() - t0} ms]`);
+  if (r.attributes.length) console.log(`  attributes: ${r.attributes.map((a) => `${a.key}=${a.value}`).join(" · ")}`);
+  console.log(`  holds (${r.holds.length}):`); for (const l of r.holds) console.log("    " + linkLine(g, l, eid));
+  console.log(`  not then (${r.ended.length}):`); for (const l of r.ended) console.log("    " + linkLine(g, l, eid));
+  console.log(`  undated (${r.undated.length}):`); for (const l of r.undated) console.log("    " + linkLine(g, l, eid));
+}
+
+async function contestedCmd(id?: string, ref?: string) {
+  const { g, eid, ms } = await loaded(id, ref, "wg contested <inv> [ref] [--pred p]", false);
+  const t0 = Date.now();
+  const r = contested(g, eid, s("pred"));
+  console.log(`contested(${eid ? g.entities.get(eid)?.name : "all"})  ${r.links.length} links · ${r.attributes.length} attributes  [load ${ms} ms · op ${Date.now() - t0} ms]`);
+  for (const l of r.links) {
+    console.log("  " + linkLine(g, l, eid));
+    for (const [k, vs] of Object.entries(l.qualifier_conflicts ?? {})) console.log(`      ${k}: ${(vs as { value: string; claim_ids: string[] }[]).map((v) => `"${v.value}" ×${v.claim_ids.length}`).join("  vs  ")}`);
+  }
+  for (const a of r.attributes) console.log(`  ${g.entities.get(a.entity)?.name} · ${a.key} = ${a.value}   ${gradeTag(a)}`);
+}
+
+async function similarCmd(id?: string, ref?: string) {
+  const { g, eid, ms } = await loaded(id, ref, 'wg similar <inv> "<ref>" [--limit 10]');
+  const t0 = Date.now();
+  const r = similar(g, eid, Number(s("limit") ?? 10));
+  console.log(`similar(${g.entities.get(eid)?.name})  [load ${ms} ms · op ${Date.now() - t0} ms]`);
+  for (const x of r) console.log(`  ${String(x.score).padEnd(6)} ${(g.entities.get(x.id)?.name ?? "").padEnd(34)} shares ${x.shared.map((v) => g.entities.get(v)?.name).join(", ")}`);
+}
+
+async function whyCmd(id?: string, ref?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || !ref) return fail('wg why <inv> <link-id | attribute-id | "entity ref">');
+  // a link or attribute id prefix, else an entity
+  const [l] = await query<{ id: string }>(`SELECT id FROM links WHERE investigation_id=$1 AND id::text LIKE $2`, [inv.id, `${ref}%`]);
+  const [a] = l ? [] : await query<{ id: string }>(`SELECT id FROM attributes WHERE investigation_id=$1 AND id::text LIKE $2`, [inv.id, `${ref}%`]);
+  const kind = l ? "link" : a ? "attribute" : "entity";
+  const target = l?.id ?? a?.id ?? (await findEntity(inv.id, ref));
+  const w = await why(inv.id, kind, target);
+  console.log(`why ${kind} ${w.label}`);
+  if (w.rule) console.log(`  rule: ${w.rule.name} (${w.rule.id})`);
+  if (w.members?.length) { console.log(`  assembled from ${w.members.length} name${w.members.length === 1 ? "" : "s"}:`); for (const m of w.members) console.log(`    ${short(m.provisional_id)}  ${m.name}  (${m.claim_count} claims)`); }
+  if (w.decisions.length) { console.log("  decisions:"); for (const d of w.decisions) console.log(`    ${d.at}  ${d.method.padEnd(6)} ${d.verdict.padEnd(9)} ${short(d.a)} ↔ ${short(d.b)}${d.note ? "  — " + d.note.slice(0, 100) : ""}`); }
+  if (w.judge?.length) { console.log("  judge:"); for (const j of w.judge) console.log(`    ${j.verdict.padEnd(9)} ${j.reason.slice(0, 140)}`); }
+  if (w.claims.length) {
+    console.log(`  ${w.claims.length} claim${w.claims.length === 1 ? "" : "s"} · ${w.origins} independent origin${w.origins === 1 ? "" : "s"}:`);
+    let lastOrigin = "";
+    for (const c of w.claims) {
+      if (c.origin && c.origin !== lastOrigin) { console.log(`    origin ${short(c.origin)}`); lastOrigin = c.origin; }
+      console.log(`      [${c.tier}] ${c.domain}${c.doc_kind ? " (" + c.doc_kind + ")" : ""}${c.asserted_at ? " " + c.asserted_at : ""}  ${c.text}`);
+      console.log(`          “${c.quote.replace(/\s+/g, " ").slice(0, 200)}”`);
+      console.log(`          ${c.url}`);
+    }
+  }
+}
+
+async function decisionsCmd(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg decisions <inv> [--limit 50]");
+  const rows = await listDecisions(inv.id, Number(s("limit") ?? 50));
+  if (!rows.length) return console.log("no decisions logged yet");
+  for (const r of rows) console.log(`${String(r.seq).padStart(4)}  ${r.at.slice(0, 16).replace("T", " ")}  ${r.actor.padEnd(6)} ${r.kind.padEnd(10)} ${r.rationale}${r.reversible_by ? `   (reverse: ${r.reversible_by})` : ""}`);
 }
 
 async function investigations() {

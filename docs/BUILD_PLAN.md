@@ -106,6 +106,19 @@ vocabulary; a new feature reads them, it does not reshape them.
 6. **Decisions + the toolkit**: `decision` table; `ego · paths · intersect · fold · timeline · at · contested ·
    gaps · why · similar` as functions returning bounded, graded subgraphs; `wg dossier/neighbors/why`.
    *Test:* every toolkit call on seed A returns within 300 ms and every edge carries a grade and a why-chain.
+   **✅ 2026-08-30** — `packages/knowledge/src/toolkit.ts`: pure functions over a loaded graph (`loadGraph`,
+   ≈25 ms for seed A; every operator 0–13 ms), each returning a bounded subgraph whose edges carry the
+   two-axis grade and the link id that `why` explains: `ego` (hops, predicates, as-of date, min grade, edge
+   limit → truncated flag), `paths` (iterative deepening, simple paths, time window, weakest grade per path),
+   `intersect`, `fold` (meta-paths with `*`), `timeline`, `at` (holds / not-then / undated), `contested`
+   (qualifier disagreements listed with counts), `similar` (neighbour Jaccard). `why` walks justification →
+   claims grouped by independent origin → quote, page, document kind, tier; for an entity it shows the names
+   it was assembled from, the decisions and the judge's reasons. `decisions` table (model §1.10) written by
+   scope (investigate), merge/split (decide, unmerge) and refer (judge); `wg decisions`. Six new toolkit
+   tests (70 total). On seed A: Person A ↔ Person B has 30 paths ≤ 3 (knows; Acorn Capital; Alder
+   Maple…), fold person–board_member–org–board_member–person from Person A gives his co-directors at
+   Meridian Space and Birch, `at(Person A, 2015-06-01)` holds Granite Partners + 6 board seats and puts ACORN in
+   "not then". Still to do in M1: delete-and-rederive on retraction, gold set + B³, third common-name seed.
 
 M1 acceptance = all six tests, on gold seeds A (Person A), E (Person E), and a third common-name seed.
 
