@@ -6,6 +6,7 @@
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
     "@worldgraph/core": "workspace:*",
-    "@worldgraph/db": "workspace:*"
+    "@worldgraph/db": "workspace:*",
+    "yaml": "^2.8.1"
   }
 }

@@ -53,6 +53,19 @@ vocabulary; a new feature reads them, it does not reshape them.
 4. **Justifications + grades**: `justification` table written by every materialization; grades as a view over
    justifications with the two-axis code; delete-and-rederive on retraction. *Test:* retract one source → its
    dependent links regrade or drop; nothing else moves.
+   **✅ 3+4 (first cut) 2026-08-30** — migration 0004: `entities`, `claim_entities`, `links`, `attributes`
+   (all rebuildable, stable hashed ids so slots survive), `justifications`, `rules`, `slots`; migration 0005:
+   claims from an older prompt become `superseded` when their chunk was re-extracted. `rebuild` groups
+   mentions by (type, normalized name) — the placeholder the M1.5 resolver replaces — aggregates claims into
+   links/attributes with the evidence profile (independent origins from clusters, primary origins, best tier,
+   contested for functional attributes) and the **two-axis grade** (A–F × 1–6 → established / corroborated /
+   single_source / unverified / disputed); 11 core rules in `packages/knowledge/rules/core.yaml` open slots;
+   interval holes on covering predicates become windowed slots. `wg rebuild · entities · dossier · gaps · rules`.
+   Seed A (v2 claims only): 309 claims → 214 entities · 228 links · 66 attributes; grades established 26 ·
+   corroborated 11 · single_source 207 · unverified 50; slots 69 found · 728 open · 1 interval hole. Person A's
+   dossier reads correctly (e.g. board_member Harbor Medical 2010→2016, **established B1, 3 origins**).
+   Still to do in 4: delete-and-rederive on retraction (needs decisions, M1.5) and the "subject's own site =
+   primary" tier rule (acorncap.com currently grades F).
 5. **Resolution as claims**: mentions → blocking → scoring (Fellegi–Sunter, learned u/m; sidecar or TS port)
    → identity hypotheses with predicted observations → split-test Action before merge → `same_as` decisions
    → entities/links as views; `wg candidates/decide/unmerge`. *Test:* B³ F1 ≥ 0.9 on the 300-pair gold set;

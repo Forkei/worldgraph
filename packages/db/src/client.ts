@@ -1,6 +1,9 @@
 import pg from "pg";
 import { env } from "@worldgraph/core";
 
+// DATE columns come back as plain 'YYYY-MM-DD' strings (never local-midnight Date objects that shift a day).
+pg.types.setTypeParser(1082, (v: string) => v);
+
 let pool: pg.Pool | null = null;
 
 export function getPool(): pg.Pool {

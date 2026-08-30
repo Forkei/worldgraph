@@ -9,8 +9,8 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS } from "@worldgraph/extract";
-import { resolveTier, runOriginClustering } from "@worldgraph/knowledge";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion } from "@worldgraph/extract";
+import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
 const flags = parseArgs({
@@ -21,7 +21,7 @@ const flags = parseArgs({
     seed: { type: "string" }, kind: { type: "string", default: "person" }, goal: { type: "string" }, title: { type: "string" },
     urls: { type: "string" }, url: { type: "string", multiple: true }, inv: { type: "string" }, model: { type: "string", default: DEFAULT_MODEL },
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
-    rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false },
+    rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -43,6 +43,11 @@ async function main() {
     case "sql": return sql([sub, ...rest].filter(Boolean).join(" "));
     case "ontology": return ontology(sub);
     case "cluster": return cluster(sub ?? s("inv"));
+    case "rebuild": return rebuildCmd(sub ?? s("inv"));
+    case "entities": return entities(sub ?? s("inv"));
+    case "dossier": return dossier(sub ?? s("inv"), rest[0]);
+    case "gaps": return gaps(sub ?? s("inv"));
+    case "rules": return rulesCmd(sub);
     case "tiers": return tiers(sub, rest[0]);
     case "models": return console.log(Object.values(MODELS).map((m) => `${m.alias.padEnd(22)} ${m.label.padEnd(26)} $${m.price[0]}/$${m.price[1]} per 1M${hasKeyFor(m) ? "" : "   (no API key)"}`).join("\n"));
     default:
@@ -59,6 +64,11 @@ async function main() {
   wg models
   wg ontology [predicates|types|keys]   the registry as the extractor sees it
   wg cluster <inv>               recompute origin clusters (independent sources per fact)
+  wg rebuild <inv>               claims → entities, links, attributes (graded), slots
+  wg entities <inv> [--type person] [--limit 40]
+  wg dossier <inv> "<name|id>"   one entity: keys, attributes, links (graded), slots
+  wg gaps <inv>                  open slots (what is missing)
+  wg rules [sync]                list rules / load YAML rules into the table
   wg tiers [<pattern> <tier>]    list or set source reliability tiers
   wg sql "<select ...>"`);
   }
@@ -171,6 +181,87 @@ async function cluster(id?: string) {
 async function tiers(pattern?: string, tier?: string) {
   if (pattern && tier) { await setTier(pattern, tier.toUpperCase(), null, null); console.log(`set ${pattern} → ${tier.toUpperCase()}`); }
   for (const r of await getTierRows()) console.log(`${r.tier}  ${r.pattern.padEnd(28)} ${(r.kind ?? "").padEnd(11)} ${r.family_id ?? ""}`);
+}
+
+async function rebuildCmd(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg rebuild <inv>");
+  await syncRules();
+  const t0 = Date.now();
+  const st = await rebuild(inv.id, { currentPromptVersion: promptVersion(registry()) });
+  console.log(`rebuilt ${short(inv.id)} in ${((Date.now() - t0) / 1000).toFixed(1)}s: ${st.claims} claims → ${st.entities} entities · ${st.links} links · ${st.attributes} attributes`);
+  console.log(`grades: ${Object.entries(st.by_grade).map(([g, n]) => `${g} ${n}`).join(" · ")}`);
+  console.log(`slots: ${st.slots_found} found · ${st.slots_open} open · ${st.holes} interval holes`);
+}
+
+async function entities(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg entities <inv>");
+  const type = s("type");
+  const rows = await query<{ id: string; type: string; kind: string | null; canonical_name: string; aliases: string[]; claim_count: string; keys: string; links: string }>(
+    `SELECT e.id, e.type, e.kind, e.canonical_name, e.aliases, e.claim_count, e.identity_keys::text keys,
+            (SELECT count(*) FROM links l WHERE l.src_id=e.id OR l.dst_id=e.id) links
+       FROM entities e WHERE e.investigation_id=$1 ${type ? "AND e.type=$2" : ""} ORDER BY e.claim_count DESC LIMIT $${type ? 3 : 2}`,
+    type ? [inv.id, type, Number(s("limit") ?? 40)] : [inv.id, Number(s("limit") ?? 40)]);
+  for (const r of rows) {
+    const al = r.aliases.filter((a) => a !== r.canonical_name).slice(0, 4).join(" | ");
+    console.log(`${short(r.id)}  ${r.type.padEnd(12)} ${(r.kind ?? "").padEnd(10)} ${r.canonical_name.padEnd(36)} ${String(r.claim_count).padStart(4)} claims ${String(r.links).padStart(3)} links${al ? "   aka " + al : ""}${r.keys !== "{}" ? "   keys " + r.keys : ""}`);
+  }
+}
+
+async function findEntity(invId: string, ref: string) {
+  const byId = await query<{ id: string }>(`SELECT id FROM entities WHERE investigation_id=$1 AND id::text LIKE $2`, [invId, `${ref}%`]);
+  if (byId.length === 1) return byId[0]!.id;
+  const byName = await query<{ id: string; canonical_name: string; claim_count: string }>(
+    `SELECT id, canonical_name, claim_count FROM entities WHERE investigation_id=$1 AND (lower(canonical_name) = lower($2) OR $2 = ANY(aliases) OR name_norm LIKE lower($2) || '%') ORDER BY claim_count DESC LIMIT 5`, [invId, ref]);
+  if (!byName.length) return fail(`no entity matching "${ref}"`);
+  if (byName.length > 1 && byName[0]!.canonical_name.toLowerCase() !== ref.toLowerCase()) console.log(`(matched "${byName[0]!.canonical_name}"; others: ${byName.slice(1).map((b) => b.canonical_name).join(", ")})`);
+  return byName[0]!.id;
+}
+
+async function dossier(id?: string, ref?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || !ref) return fail('wg dossier <inv> "<name or id>"');
+  const eid = await findEntity(inv.id, ref);
+  const [e] = await query<{ id: string; type: string; kind: string | null; canonical_name: string; aliases: string[]; identity_keys: Record<string, string[]>; claim_count: string; first_seen: string | null; last_seen: string | null }>(`SELECT * FROM entities WHERE id=$1`, [eid]);
+  if (!e) return fail("entity vanished");
+  const d = (v: unknown) => (v ? new Date(v as string).toISOString().slice(0, 10) : "?");
+  console.log(`\n${e.canonical_name}  [${e.type}${e.kind ? "/" + e.kind : ""}]  ${e.claim_count} claims  seen ${d(e.first_seen)} → ${d(e.last_seen)}`);
+  if (e.aliases.length > 1) console.log(`aliases: ${e.aliases.join(" | ")}`);
+  if (Object.keys(e.identity_keys).length) console.log(`identity keys: ${Object.entries(e.identity_keys).map(([k, v]) => `${k}=${v.join(",")}`).join("  ")}`);
+  const attrs = await query<Record<string, any>>(`SELECT * FROM attributes WHERE entity_id=$1 ORDER BY key, grade`, [eid]);
+  if (attrs.length) { console.log("\nattributes:"); for (const a of attrs) console.log(`  ${a.key}${a.key_specific ? " [" + a.key_specific + "]" : ""} = ${a.value}   ${gradeStr(a)}${a.contested ? "  ⚠ contested" : ""}`); }
+  const out = await query<Record<string, any>>(`SELECT l.*, d.canonical_name other FROM links l JOIN entities d ON d.id=l.dst_id WHERE l.src_id=$1 ORDER BY l.predicate, l.grade, l.evidence_count DESC`, [eid]);
+  const inn = await query<Record<string, any>>(`SELECT l.*, d.canonical_name other FROM links l JOIN entities d ON d.id=l.src_id WHERE l.dst_id=$1 ORDER BY l.predicate, l.grade, l.evidence_count DESC`, [eid]);
+  const reg = registry();
+  let last = "";
+  console.log("\nlinks:");
+  for (const l of out) { if (l.predicate !== last) { console.log(`  ${l.predicate}${l.predicate_specific ? "" : ""} →`); last = l.predicate; } console.log(`      ${l.other}${l.predicate_specific ? " [" + l.predicate_specific + "]" : ""}${qualStr(l.qualifiers)}${timeStr(l)}   ${gradeStr(l)}`); }
+  last = "";
+  for (const l of inn) { const label = "← " + reg.inverse(l.predicate); if (label !== last) { console.log(`  ${label}`); last = label; } console.log(`      ${l.other}${qualStr(l.qualifiers)}${timeStr(l)}   ${gradeStr(l)}`); }
+  const slots = await query<Record<string, any>>(`SELECT kind, key, status, expectedness, window_lo, window_hi, reason FROM slots WHERE entity_id=$1 ORDER BY status, kind, key`, [eid]);
+  if (slots.length) { console.log("\nslots:"); for (const sl of slots) console.log(`  ${sl.status.padEnd(16)} ${sl.kind}:${sl.key}${sl.window_lo ? ` [${sl.window_lo} → ${sl.window_hi}]` : ""}${sl.expectedness ? "  (" + sl.expectedness + ")" : ""}${sl.reason ? "  — " + sl.reason : ""}`); }
+}
+
+const gradeStr = (r: Record<string, any>) => `${r.grade} ${r.reliability}${r.credibility} · ${r.independent_origins} origin${r.independent_origins === 1 ? "" : "s"}/${r.evidence_count} claim${r.evidence_count === 1 ? "" : "s"}`;
+const qualStr = (q: Record<string, string> | null) => q && Object.keys(q).length ? " {" + Object.entries(q).map(([k, v]) => `${k}: ${v}`).join(", ") + "}" : "";
+const timeStr = (l: Record<string, any>) => { const f = l.valid_from_lo ? String(l.valid_from_lo).slice(0, 10) : null, t = l.valid_to_hi ? String(l.valid_to_hi).slice(0, 10) : null, d = l.date_lo ? String(l.date_lo).slice(0, 10) : null; return f || t ? `  ${f ?? "?"} → ${t ?? "…"}` : d ? `  @${d}` : ""; };
+
+async function gaps(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg gaps <inv>");
+  const rows = await query<{ name: string; type: string; kind: string; key: string; status: string; expectedness: string | null; window_lo: string | null; window_hi: string | null; n: string }>(
+    `SELECT e.canonical_name name, e.type, s.kind, s.key, s.status, s.expectedness, s.window_lo, s.window_hi, e.claim_count n
+       FROM slots s JOIN entities e ON e.id=s.entity_id WHERE s.investigation_id=$1 AND s.status <> 'found'
+       ORDER BY (s.expectedness='mandatory') DESC, e.claim_count DESC, s.key LIMIT $2`, [inv.id, Number(s("limit") ?? 40)]);
+  const summary = await query<{ status: string; n: string }>(`SELECT status, count(*) n FROM slots WHERE investigation_id=$1 GROUP BY 1 ORDER BY 1`, [inv.id]);
+  console.log(`slots: ${summary.map((r) => `${r.status} ${r.n}`).join(" · ")}\n`);
+  for (const r of rows) console.log(`${r.status.padEnd(16)} ${(r.expectedness ?? "").padEnd(9)} ${r.name.padEnd(34)} ${r.kind}:${r.key}${r.window_lo ? ` [${String(r.window_lo).slice(0, 10)} → ${String(r.window_hi).slice(0, 10)}]` : ""}`);
+}
+
+async function rulesCmd(sub?: string) {
+  if (sub === "sync") { const n = await syncRules(); console.log(`synced ${n} rules`); return; }
+  for (const r of loadRuleFiles()) console.log(`${r.kind.padEnd(16)} ${r.id.padEnd(40)} ${r.name}`);
 }
 
 async function investigations() {

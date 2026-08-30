@@ -1,0 +1,72 @@
+# Core rules (INVESTIGATION_MODEL §1.6). Everything expected is a rule. `when` is a simple pattern over an
+# entity's view (type, kind, has/lacks predicate or attribute); `then` opens a slot. Jurisdiction-aware
+# expected-record rules arrive with M2 connectors; these are the shapes every graph should satisfy.
+#
+# when:  { type, kind?, has_predicate?, has_attribute?, lacks_predicate?, lacks_attribute? }
+# then:  { slot: { kind: predicate|attribute|record_class, key, expectedness, covering?: true, note } }
+
+- id: shape.person.residence
+  kind: shape
+  name: A person has a residence per covered period
+  when: { type: person }
+  then: { slot: { kind: predicate, key: located_in, expectedness: usual, covering: true, note: "residence timeline" } }
+
+- id: shape.person.employment
+  kind: shape
+  name: A person has employment per covered period
+  when: { type: person }
+  then: { slot: { kind: predicate, key: works_at, expectedness: usual, covering: true, note: "employment timeline" } }
+
+- id: shape.person.dob
+  kind: shape
+  name: A person has a date of birth
+  when: { type: person }
+  then: { slot: { kind: attribute, key: date_of_birth, expectedness: usual } }
+
+- id: shape.person.household
+  kind: shape
+  name: A person has a household (spouse / partner) or the absence is known
+  when: { type: person }
+  then: { slot: { kind: predicate, key: spouse_of, expectedness: possible } }
+
+- id: shape.person.accounts
+  kind: shape
+  name: A person has online accounts
+  when: { type: person }
+  then: { slot: { kind: predicate, key: uses_account, expectedness: usual } }
+
+- id: shape.org.registered_address
+  kind: shape
+  name: An organization has a registered address / headquarters
+  when: { type: organization }
+  then: { slot: { kind: predicate, key: located_in, expectedness: usual } }
+
+- id: shape.org.people
+  kind: shape
+  name: An organization has officers / members
+  when: { type: organization }
+  then: { slot: { kind: predicate, key: has_member, expectedness: usual, note: "inverse of member_of" } }
+
+- id: shape.org.founded
+  kind: shape
+  name: An organization has a founding date
+  when: { type: organization, kind: company }
+  then: { slot: { kind: attribute, key: founded_on, expectedness: usual } }
+
+- id: expected.org.company.registry
+  kind: expected_record
+  name: A company appears in a company registry
+  when: { type: organization, kind: company }
+  then: { slot: { kind: record_class, key: company_registry, expectedness: mandatory, note: "OpenCorporates / SoS / Sirene / Companies House" } }
+
+- id: expected.org.fund.adv
+  kind: expected_record
+  name: A US investment adviser / fund has SEC Form ADV / D
+  when: { type: organization, kind: fund }
+  then: { slot: { kind: record_class, key: sec_adv_or_form_d, expectedness: usual } }
+
+- id: expected.person.obituary_relatives
+  kind: expected_record
+  name: Relatives are usually findable via obituaries of the same surname
+  when: { type: person, lacks_predicate: parent_of }
+  then: { slot: { kind: record_class, key: obituary_surname_search, expectedness: possible } }
