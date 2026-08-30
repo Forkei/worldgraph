@@ -4,6 +4,7 @@ export function markdownToText(md: string): string {
   let t = md.replace(/\r\n?/g, "\n");
   t = t.replace(/```[\s\S]*?```/g, (b) => b.replace(/```[^\n]*\n?/g, ""));   // fenced code → contents
   t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, " ");                                 // images
+  t = t.replace(/\[\[(?:\d{1,4}|[a-z]|note \d{1,3})\]\]\([^)]*\)/gi, " ");           // [[65]](url) wiki citation links → gone
   t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");                               // [text](url) → text
   t = t.replace(/\[([^\]]*)\]\[[^\]]*\]/g, "$1");                              // [text][ref] → text
   t = t.replace(/^\s*\[[^\]]+\]:\s*\S+.*$/gm, "");                             // [ref]: url definitions

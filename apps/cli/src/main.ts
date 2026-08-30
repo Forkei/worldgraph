@@ -9,8 +9,8 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource, judgePair, type Side } from "@worldgraph/extract";
-import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource, judgePair, prepareText, locateQuote, type Side } from "@worldgraph/extract";
+import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
 const flags = parseArgs({
@@ -61,6 +61,10 @@ async function main() {
     case "similar": return similarCmd(sub ?? s("inv"), rest[0]);
     case "why": return whyCmd(sub ?? s("inv"), rest[0]);
     case "decisions": return decisionsCmd(sub ?? s("inv"));
+    case "retract": return retract(sub ?? s("inv"), rest[0]);
+    case "reinstate": return retract(sub ?? s("inv"), rest[0], true);
+    case "gold": return goldCmd(sub ?? s("inv"), rest[0], rest[1]);
+    case "regate": return regate(sub ?? s("inv"));
     case "entities": return entities(sub ?? s("inv"));
     case "dossier": return dossier(sub ?? s("inv"), rest[0]);
     case "gaps": return gaps(sub ?? s("inv"));
@@ -100,6 +104,9 @@ async function main() {
   wg similar <inv> "<ref>"       entities sharing a neighbourhood
   wg why <inv> <link-id|"ref">   the justification chain down to quotes and pages
   wg decisions <inv>             the decisions log
+  wg retract <inv> <source|domain> [--note]   withdraw a source: its claims leave, dependents re-derive; wg reinstate undoes
+  wg gold <inv> export|eval <file.yaml>       write the current clustering for review / score B³ against the reviewed file
+  wg regate <inv>                re-run the quote gate on rejected claims (after a gate improvement)
   wg rules [sync]                list rules / load YAML rules into the table
   wg tiers [<pattern> <tier>]    list or set source reliability tiers
   wg sql "<select ...>"`);
@@ -557,6 +564,92 @@ async function decisionsCmd(id?: string) {
   const rows = await listDecisions(inv.id, Number(s("limit") ?? 50));
   if (!rows.length) return console.log("no decisions logged yet");
   for (const r of rows) console.log(`${String(r.seq).padStart(4)}  ${r.at.slice(0, 16).replace("T", " ")}  ${r.actor.padEnd(6)} ${r.kind.padEnd(10)} ${r.rationale}${r.reversible_by ? `   (reverse: ${r.reversible_by})` : ""}`);
+}
+
+// ---- retraction: delete-and-rederive ----
+async function linkSnapshot(invId: string) {
+  const rows = await query<{ id: string; grade: string; evidence_count: number }>(`SELECT id, grade, evidence_count FROM links WHERE investigation_id=$1`, [invId]);
+  return new Map(rows.map((r) => [r.id, r]));
+}
+async function retract(id?: string, ref?: string, reinstate = false) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || !ref) return fail(`wg ${reinstate ? "reinstate" : "retract"} <inv> <source-id|domain> [--note reason]`);
+  const srcs = await query<{ id: string; url: string; status: string }>(`SELECT id, coalesce(final_url,url) url, status FROM sources WHERE investigation_id=$1 AND (id::text LIKE $2 OR domain = $3)`, [inv.id, `${ref}%`, ref]);
+  if (!srcs.length) return fail(`no source matching "${ref}"`);
+  const before = await linkSnapshot(inv.id);
+  const ids = srcs.map((x) => x.id);
+  let n = 0;
+  if (reinstate) {
+    await query(`UPDATE sources SET status='extracted', retracted_at=NULL, retracted_reason=NULL WHERE id = ANY($1::uuid[])`, [ids]);
+    for (const t of ["relation_claims", "attribute_claims"]) n += (await query(`UPDATE ${t} SET status='raw' WHERE source_id = ANY($1::uuid[]) AND status='retracted' RETURNING id`, [ids])).length;
+  } else {
+    await query(`UPDATE sources SET status='retracted', retracted_at=now(), retracted_reason=$2 WHERE id = ANY($1::uuid[])`, [ids, s("note") ?? null]);
+    for (const t of ["relation_claims", "attribute_claims"]) n += (await query(`UPDATE ${t} SET status='retracted' WHERE source_id = ANY($1::uuid[]) AND status='raw' RETURNING id`, [ids])).length;
+  }
+  await recordDecision(inv.id, { actor: "human", kind: "policy", subject: { sources: ids }, rationale: `${reinstate ? "reinstated" : "retracted"} ${srcs.map((x) => x.url).join(", ")} (${n} claims)${s("note") ? " — " + s("note") : ""}`, reversible_by: reinstate ? "wg retract" : "wg reinstate" });
+  console.log(`${reinstate ? "reinstated" : "retracted"} ${srcs.length} source${srcs.length === 1 ? "" : "s"} · ${n} claims — rebuilding`);
+  await rebuildCmd(inv.id);
+  const after = await linkSnapshot(inv.id);
+  let dropped = 0, added = 0, regraded = 0, unchanged = 0;
+  for (const [lid, b] of before) { const a = after.get(lid); if (!a) dropped++; else if (a.grade !== b.grade || a.evidence_count !== b.evidence_count) regraded++; else unchanged++; }
+  for (const lid of after.keys()) if (!before.has(lid)) added++;
+  console.log(`links: ${dropped} dropped · ${regraded} regraded · ${added} added · ${unchanged} untouched`);
+}
+
+// ---- gold clustering + B³ ----
+async function goldCmd(id?: string, sub2?: string, file?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || !file || !["export", "eval"].includes(sub2 ?? "")) return fail("wg gold <inv> export|eval <file.yaml>");
+  const members = await query<{ entity_id: string; provisional_id: string; name: string; type: string; canonical_name: string; claim_count: string }>(
+    `SELECT m.entity_id, m.provisional_id, m.name, e.type, e.canonical_name, e.claim_count FROM entity_members m JOIN entities e ON e.id=m.entity_id WHERE e.investigation_id=$1 ORDER BY e.claim_count DESC, e.canonical_name, m.name`, [inv.id]);
+  if (sub2 === "export") {
+    const byEntity = new Map<string, typeof members>();
+    for (const m of members) (byEntity.get(m.entity_id) ?? byEntity.set(m.entity_id, []).get(m.entity_id)!).push(m);
+    const lines = [`# Gold clustering for ${inv.title}`, `# One entry per real-world entity; members are provisional ids (stable per source × name).`, `# Move ids between entries to correct the system; set reviewed: true when checked by a human.`,
+      `investigation: ${inv.id}`, `reviewed: false`, `exported_at: ${new Date().toISOString()}`, `entities:`];
+    for (const [, ms] of byEntity) {
+      const e = ms[0]!;
+      lines.push(`  - name: ${JSON.stringify(e.canonical_name)}`, `    type: ${e.type}`, `    members:`);
+      for (const m of ms) lines.push(`      - ${m.provisional_id}   # ${m.name}`);
+    }
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    const { dirname } = await import("node:path");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, lines.join("\n") + "\n");
+    console.log(`wrote ${byEntity.size} entities · ${members.length} members → ${file}`);
+    return;
+  }
+  const gold = loadGoldFile(file);
+  const system = new Map(members.map((m) => [m.provisional_id, m.entity_id]));
+  const r = bcubed(system, goldToMap(gold));
+  const names = new Map(members.map((m) => [m.provisional_id, m.name]));
+  console.log(`B³ vs ${file}${gold.reviewed ? "" : " (NOT yet human-reviewed)"}: precision ${r.precision} · recall ${r.recall} · F1 ${r.f1}   (${r.mentions} mentions · ${r.gold_clusters} gold · ${r.system_clusters} system clusters)`);
+  for (const c of r.over_merged) console.log(`  over-merged:  ${c.map((x) => `${short(x)} ${names.get(x)}`).join(" | ")}`);
+  for (const c of r.under_merged) console.log(`  under-merged: ${c.map((x) => `${short(x)} ${names.get(x)}`).join(" | ")}`);
+}
+
+// ---- re-run the quote gate on rejected claims (after a gate improvement) ----
+async function regate(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg regate <inv>");
+  const srcs = await query<{ id: string; text: string }>(`SELECT id, text FROM sources WHERE investigation_id=$1 AND text IS NOT NULL`, [inv.id]);
+  let checked = 0, restored = 0;
+  for (const src of srcs) {
+    const prepared = prepareText(src.text);
+    for (const t of ["relation_claims", "attribute_claims"]) {
+      const rows = await query<{ id: string; quote: string }>(`SELECT id, quote FROM ${t} WHERE source_id=$1 AND status='rejected' AND reject_reason='quote_not_found'`, [src.id]);
+      for (const r of rows) {
+        checked++;
+        const loc = locateQuote(r.quote, prepared);
+        if (!loc) continue;
+        const passage = src.text.slice(Math.max(0, loc.start - 150), Math.min(src.text.length, loc.end + 150)).replace(/\s+/g, " ").trim();
+        await query(`UPDATE ${t} SET status='raw', reject_reason=NULL, span_start=$2, span_end=$3, span_method=$4, passage=$5 WHERE id=$1`, [r.id, loc.start, loc.end, loc.method, passage]);
+        restored++;
+      }
+    }
+  }
+  console.log(`re-gated ${checked} rejected claims · ${restored} now locate and are back in`);
+  if (restored) { await runOriginClustering(inv.id); await rebuildCmd(inv.id); }
 }
 
 async function investigations() {

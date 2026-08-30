@@ -82,3 +82,13 @@ describe("surfaceInQuote (soft check)", () => {
     expect(surfaceInQuote("Tim Sample", "He said: we're building it")).toBe(false);
   });
 });
+
+describe("citation markers", () => {
+  it("a quote spanning [23]-style markers still locates exactly, with original offsets", async () => {
+    const { prepareText, locateQuote } = await import("../src/quoteGate.ts");
+    const text = "Sample returned to North Carolina to complete his degree in 1986,[23] when he graduated[a] with a Bachelor of Arts degree in geography.[note 2]";
+    const loc = locateQuote("Sample returned to North Carolina to complete his degree in 1986, when he graduated with a Bachelor of Arts degree in geography.", prepareText(text));
+    expect(loc?.method).toBe("exact");
+    expect(text.slice(loc!.start, loc!.end)).toMatch(/^Sample returned.*geography$/);
+  });
+});

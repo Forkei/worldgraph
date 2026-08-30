@@ -16,8 +16,13 @@ export const FUZZY_MIN_RATIO = 0.9;
 const FUZZY_MIN_TOKENS = 3;
 const MAX_ANCHORS = 400;
 
+/** Citation markers ("[23]", "[a]", "[note 4]", "[citation needed]", "[edit]") sit between words on wiki-style
+ *  pages and break verbatim matching. They are blanked with same-length spaces so offsets stay exact. */
+export const CITATION_MARK = /\[\[(?:\d{1,4}|[a-z]|note \d{1,3})\]\]\([^)\s]*\)|\[(?:\d{1,4}|[a-z]|note \d{1,3}|citation needed|edit|clarification needed|when\?|who\?)\]/gi;
+export const blankCitations = (text: string): string => text.replace(CITATION_MARK, (m) => " ".repeat(m.length));
+
 export function prepareText(text: string): Normalized {
-  return normalizeWithMap(text);
+  return normalizeWithMap(blankCitations(text));
 }
 
 /** Locate `quote` inside prepared text. Returns original-text offsets [start, end). */

@@ -119,8 +119,24 @@ vocabulary; a new feature reads them, it does not reshape them.
    Maple…), fold person–board_member–org–board_member–person from Person A gives his co-directors at
    Meridian Space and Birch, `at(Person A, 2015-06-01)` holds Granite Partners + 6 board seats and puts ACORN in
    "not then". Still to do in M1: delete-and-rederive on retraction, gold set + B³, third common-name seed.
+   **✅ M1 close-out 2026-08-30** — *Retraction:* `wg retract <inv> <source|domain>` withdraws a source
+   (status `retracted`, its claims `retracted`), rebuilds and reports the diff; `wg reinstate` undoes. On seed A
+   retracting gritt.io: 28 claims out → 9 links dropped, 13 regraded, **230 untouched**; reinstating restores
+   exactly (stable ids make delete-and-rederive a property, not a procedure). *Gold + B³:* `wg gold <inv>
+   export <file>` writes the current clustering as YAML (provisional ids with names, `reviewed: false`) for
+   a human to correct; `wg gold <inv> eval <file>` scores B³ precision/recall/F1 and lists over-/under-merged
+   clusters. Files exported for all three seeds — **the maintainer still has to review them** before F1 means
+   anything. *Seed C — Person C* (`01a053d7`, 13 URLs, $0.74): the Berkeley professor, the
+   basketball player and the actor are mixed on purpose. Result: 212 names → 190 entities; **three namesakes, three entities** (athlete 154 claims / professor 88 / actor 40), no cross-namesake path ≤ 3, no
+   cross-namesake hypothesis was even raised; the judge said *different* on every real contradiction (White
+   Sox ↔ Bulls, NBA 2K11 ↔ 2K12, EECS ↔ Statistics departments, AAAI ↔ ACM, two same-surname people) and *same*
+   on the name variants (four name variants). *Quote gate:*
+   Firecrawl renders Wikipedia citations as `[[65]](url)`; the markdown → text pass now drops them and the
+   gate blanks them offset-safely (`wg regate` re-checks rejected claims: +8 on seed C, +3 on seed A). The
+   remaining wiki rejections are stitched "…" quotes across award tables — correctly refused.
 
-M1 acceptance = all six tests, on gold seeds A (Person A), E (Person E), and a third common-name seed.
+M1 acceptance = all six tests, on gold seeds A (Person A), E (Person E), and C (Person C). **Status: built;
+B³ ≥ 0.9 awaits the human-reviewed gold files (`gold/*/entities.yaml`).**
 
 ## Gold seeds
 A Person A (public figure) · E the maintainer (self) · a third common-name public figure (to pick) · later: a
