@@ -18,7 +18,8 @@
       "@worldgraph/core": ["packages/core/src/index.ts"],
       "@worldgraph/db": ["packages/db/src/index.ts"],
       "@worldgraph/acquire": ["packages/acquire/src/index.ts"],
-      "@worldgraph/extract": ["packages/extract/src/index.ts"]
+      "@worldgraph/extract": ["packages/extract/src/index.ts"],
+      "@worldgraph/knowledge": ["packages/knowledge/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "apps/*/src/**/*.ts", "vitest.config.ts"]

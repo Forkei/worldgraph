@@ -37,6 +37,8 @@ export interface Provenance extends Time {
   chunk_index: number;
   chunk_hash: string;
   quote: string;
+  /** normalized text window around the quote; used for origin clustering (independence) */
+  passage: string | null;
   span_start: number | null;
   span_end: number | null;
   span_method: "exact" | "fuzzy" | null;

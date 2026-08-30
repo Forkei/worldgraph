@@ -5,11 +5,12 @@ import { readFileSync } from "node:fs";
 import { registry, getPolicy, env } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
-  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit,
+  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier,
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS } from "@worldgraph/extract";
+import { resolveTier, runOriginClustering } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
 const flags = parseArgs({
@@ -41,6 +42,8 @@ async function main() {
     case "proposed": return proposed(sub ?? s("inv"));
     case "sql": return sql([sub, ...rest].filter(Boolean).join(" "));
     case "ontology": return ontology(sub);
+    case "cluster": return cluster(sub ?? s("inv"));
+    case "tiers": return tiers(sub, rest[0]);
     case "models": return console.log(Object.values(MODELS).map((m) => `${m.alias.padEnd(22)} ${m.label.padEnd(26)} $${m.price[0]}/$${m.price[1]} per 1M${hasKeyFor(m) ? "" : "   (no API key)"}`).join("\n"));
     default:
       console.log(`wg — WorldGraph CLI (M0)
@@ -55,6 +58,8 @@ async function main() {
   wg proposed <inv>              "other" types/predicates by frequency
   wg models
   wg ontology [predicates|types|keys]   the registry as the extractor sees it
+  wg cluster <inv>               recompute origin clusters (independent sources per fact)
+  wg tiers [<pattern> <tier>]    list or set source reliability tiers
   wg sql "<select ...>"`);
   }
 }
@@ -80,6 +85,7 @@ async function investigate() {
   }
   await setInvestigationStatus(inv.id, "running");
   const blobs = new FsBlobStore();
+  const tierRows = await getTierRows();
   const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model, policy, registry: reg, log: (m: string) => console.log(m) };
   const totals = { sources: 0, fetched: 0, failed: 0, relations: 0, attributes: 0, rejected: 0, fuzzy: 0, other: 0, usd: 0, rejectReasons: {} as Record<string, number> };
   console.log(`model: ${model.label} · policy: ${policy.name} · ${urlList.length} urls\n`);
@@ -104,19 +110,22 @@ async function investigate() {
         else {
           const key = blobKey(inv.id, hash, r.raw_ext);
           blobs.put(key, r.raw);
+          const snapKey = r.rendered ? blobKey(inv.id, hash, "snapshot.html") : null;
+          if (snapKey && r.rendered) blobs.put(snapKey, r.rendered);
+          const t = resolveTier(safeHost(r.final_url), tierRows);
           src = await insertSource({
             investigation_id: inv.id, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status,
             content_hash: hash, blob_key: key, text: r.text, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null,
-            meta: { attempts: r.attempts, links: r.links.length },
+            meta: { attempts: r.attempts, links: r.links.length }, family_id: t.family_id, tier: t.tier, tier_kind: t.kind, snapshot_key: snapKey, captured_at: new Date(),
           });
           totals.fetched++;
-          console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · "${(r.title ?? "").slice(0, 60)}"`);
+          console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · tier ${t.tier}${t.family_id ? " (" + t.family_id + ")" : ""} · "${(r.title ?? "").slice(0, 60)}"`);
         }
       } catch (e) {
         totals.failed++;
         const msg = String((e as Error).message).slice(0, 300);
         console.log(`FAILED\n         ${msg}`);
-        await insertSource({ investigation_id: inv.id, url, final_url: null, domain: safeHost(url), kind: "unknown", fetch_method: "http", http_status: null, content_hash: null, blob_key: null, text: null, title: null, published_at: null, lang: null, status: "failed", error: msg, meta: {} });
+        await insertSource({ investigation_id: inv.id, url, final_url: null, domain: safeHost(url), kind: "unknown", fetch_method: "http", http_status: null, content_hash: null, blob_key: null, text: null, title: null, published_at: null, lang: null, status: "failed", error: msg, meta: {}, family_id: null, tier: null, tier_kind: null, snapshot_key: null, captured_at: null });
         continue;
       }
     }
@@ -127,6 +136,8 @@ async function investigate() {
     totals.relations += sum.relations; totals.attributes += sum.attributes; totals.rejected += sum.rejected; totals.fuzzy += sum.fuzzy; totals.other += sum.candidates; totals.usd += sum.usd;
     for (const [k, v] of Object.entries(sum.rejectReasons)) totals.rejectReasons[k] = (totals.rejectReasons[k] ?? 0) + v;
   }
+  const oc = await runOriginClustering(inv.id);
+  console.log(`\norigins: ${oc.claims} claims → ${oc.clusters} origin clusters over ${oc.facts} facts (${oc.multiOrigin} facts with ≥2 independent origins)`);
   await setInvestigationStatus(inv.id, "done");
   await audit({ investigation_id: inv.id, actor: "cli", action: "investigate.run", detail: { model: model.id, urls: urlList.length, ...totals } });
   const kept = totals.relations + totals.attributes;
@@ -144,6 +155,22 @@ async function ontology(which?: string) {
   if (which === "keys") for (const [k, s] of Object.entries(reg.attributeKeys)) console.log(`${k.padEnd(16)} ${s.datatype}/${s.temporal_kind}${s.attribute_class !== "public" ? "  " + s.attribute_class : ""}`);
   console.log(`
 registry hash ${reg.hash} · ${reg.extractablePredicates.length} extractable predicates · ${reg.nodeTypeNames.length} node types · ${reg.attributeKeyNames.length} attribute keys`);
+}
+
+async function cluster(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg cluster <inv>");
+  const oc = await runOriginClustering(inv.id);
+  console.log(`${oc.claims} claims → ${oc.clusters} origin clusters over ${oc.facts} facts · ${oc.multiOrigin} facts with ≥2 independent origins`);
+  const top = await query<{ fact: string; origins: string; claims: string }>(
+    `SELECT (subject->>'name') || ' —' || predicate || '→ ' || (object->>'name') fact, count(distinct origin_cluster_id) origins, count(*) claims
+       FROM relation_claims WHERE investigation_id=$1 AND status='raw' GROUP BY 1 HAVING count(*) > 1 ORDER BY origins DESC, claims DESC LIMIT 12`, [inv.id]);
+  for (const t of top) console.log(`  ${String(t.origins).padStart(2)} origins / ${String(t.claims).padStart(2)} claims  ${t.fact}`);
+}
+
+async function tiers(pattern?: string, tier?: string) {
+  if (pattern && tier) { await setTier(pattern, tier.toUpperCase(), null, null); console.log(`set ${pattern} → ${tier.toUpperCase()}`); }
+  for (const r of await getTierRows()) console.log(`${r.tier}  ${r.pattern.padEnd(28)} ${(r.kind ?? "").padEnd(11)} ${r.family_id ?? ""}`);
 }
 
 async function investigations() {
@@ -199,7 +226,7 @@ async function sources(id?: string) {
     const n = await query<{ rel: string; attr: string; rej: string }>(
       `SELECT (SELECT count(*) FROM relation_claims WHERE source_id=$1 AND status='raw') rel, (SELECT count(*) FROM attribute_claims WHERE source_id=$1 AND status='raw') attr,
               (SELECT count(*) FROM relation_claims WHERE source_id=$1 AND status='rejected')+(SELECT count(*) FROM attribute_claims WHERE source_id=$1 AND status='rejected') rej`, [r.id]);
-    console.log(`${short(r.id)}  ${r.status.padEnd(9)} ${r.fetch_method.padEnd(9)} ${String((r as unknown as { text_len: number }).text_len ?? 0).padStart(7)} chars  ${n[0]!.rel}+${n[0]!.attr} claims (${n[0]!.rej} rej)  ${r.url}${r.error ? "  ! " + r.error.slice(0, 80) : ""}`);
+    console.log(`${short(r.id)}  ${r.status.padEnd(9)} ${r.fetch_method.padEnd(9)} ${(r.tier ?? "-").padEnd(2)}${(r.family_id ?? "").padEnd(18)} ${String((r as unknown as { text_len: number }).text_len ?? 0).padStart(7)} chars  ${n[0]!.rel}+${n[0]!.attr} claims (${n[0]!.rej} rej)  ${r.url}${r.error ? "  ! " + r.error.slice(0, 80) : ""}`);
   }
 }
 

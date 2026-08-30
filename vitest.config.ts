@@ -11,6 +11,7 @@ export default defineConfig({
       "@worldgraph/db": path.resolve(__dirname, "packages/db/src/index.ts"),
       "@worldgraph/acquire": path.resolve(__dirname, "packages/acquire/src/index.ts"),
       "@worldgraph/extract": path.resolve(__dirname, "packages/extract/src/index.ts"),
+      "@worldgraph/knowledge": path.resolve(__dirname, "packages/knowledge/src/index.ts"),
     },
   },
 });

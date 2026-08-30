@@ -41,6 +41,12 @@ vocabulary; a new feature reads them, it does not reshape them.
 2. **Sources v2**: capture before extraction (raw + rendered snapshot + hash), `source_family`, `source_tier`
    tables (editable), origin clusters on claims (near-duplicate passages). *Test:* ten planted copies of one
    press release count as one origin.
+   **✅ 2026-08-30** — `source_families` (us_people_search, pr_wire, linkedin_derived, wikipedia) and
+   `source_tiers` (Admiralty A–F by domain pattern, ~50 seed rows, `wg tiers` to edit); every fetched page now
+   stores a rendered HTML snapshot; claims carry a `passage` window; `clusterOrigins` (5-shingle Jaccard ≥ 0.6
+   within one fact, same page = same origin, same family = same origin) with the planted test (10 copies → 1
+   origin; a paraphrase is *not* a copy). Seed A: 1,273 claims → 984 origin clusters over 871 facts, 80 facts
+   with ≥ 2 independent origins — e.g. "Person A works_at Alder Maple": 22 claims, **6** independent origins.
 3. **Slots + rules**: `slot`, `rule` tables; shape rules and expected-record rules (US-IL teacher set, FR
    company set) as YAML → rows; the gap query (open/stale slots, interval holes, missing reciprocals).
    *Test:* seed A shows its open slots; a planted interval hole appears as a slot with a window.

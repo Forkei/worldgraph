@@ -35,6 +35,9 @@ importers:
       '@worldgraph/extract':
         specifier: workspace:*
         version: link:../../packages/extract
+      '@worldgraph/knowledge':
+        specifier: workspace:*
+        version: link:../../packages/knowledge
 
   packages/acquire:
     dependencies:
@@ -90,6 +93,15 @@ importers:
       zod:
         specifier: ^4.1.5
         version: 4.5.4
+
+  packages/knowledge:
+    dependencies:
+      '@worldgraph/core':
+        specifier: workspace:*
+        version: link:../core
+      '@worldgraph/db':
+        specifier: workspace:*
+        version: link:../db
 
 packages:
 

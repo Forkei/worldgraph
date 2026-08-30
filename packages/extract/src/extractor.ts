@@ -128,10 +128,11 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
 
   const provenance = (quote: string, conf: number, attrClass: AttributeClass, t: TimeOut, kindDefault?: Time["temporal_kind"]) => {
     const loc = locateQuote(quote, prepared);
+    const passage = loc ? chunk.text.slice(Math.max(0, loc.start - 150), Math.min(chunk.text.length, loc.end + 150)).replace(/\s+/g, " ").trim() : null;
     return {
       prov: {
         investigation_id: source.investigation_id, source_id: source.id, chunk_index: chunk.index, chunk_hash: chunk.hash,
-        quote, span_start: loc ? chunk.start + loc.start : null, span_end: loc ? chunk.start + loc.end : null, span_method: loc?.method ?? null,
+        quote, passage, span_start: loc ? chunk.start + loc.start : null, span_end: loc ? chunk.start + loc.end : null, span_method: loc?.method ?? null,
         extractor_conf_raw: conf, verified: null, attribute_class: attrClass,
         status: (loc ? "raw" : "rejected") as RelationClaim["status"], reject_reason: loc ? null : "quote_not_found", redaction_reason: null,
         inferred: !!t.inferred, derivation: t.derivation ? { rule: t.derivation } : null, schema_version: ctx.registry.hash, extractor,

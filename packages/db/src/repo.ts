@@ -38,6 +38,7 @@ export interface SourceRow {
   id: string; investigation_id: string; url: string; final_url: string | null; domain: string | null; kind: string;
   fetch_method: string; http_status: number | null; fetched_at: Date; content_hash: string | null; blob_key: string | null;
   text: string | null; title: string | null; published_at: Date | null; lang: string | null; status: string; error: string | null; meta: Record<string, unknown>;
+  family_id: string | null; tier: string | null; tier_kind: string | null; snapshot_key: string | null; captured_at: Date | null;
 }
 
 export async function findSourceByUrl(investigationId: string, url: string): Promise<SourceRow | null> {
@@ -53,9 +54,9 @@ export async function findSourceByHash(investigationId: string, hash: string): P
 export async function insertSource(s: Omit<SourceRow, "id" | "fetched_at">): Promise<SourceRow> {
   const id = uuidv7();
   const rows = await query<SourceRow>(
-    `INSERT INTO sources (id, investigation_id, url, final_url, domain, kind, fetch_method, http_status, content_hash, blob_key, text, title, published_at, lang, status, error, meta)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
-    [id, s.investigation_id, s.url, s.final_url, s.domain, s.kind, s.fetch_method, s.http_status, s.content_hash, s.blob_key, s.text, s.title, s.published_at, s.lang, s.status, s.error, JSON.stringify(s.meta ?? {})],
+    `INSERT INTO sources (id, investigation_id, url, final_url, domain, kind, fetch_method, http_status, content_hash, blob_key, text, title, published_at, lang, status, error, meta, family_id, tier, tier_kind, snapshot_key, captured_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
+    [id, s.investigation_id, s.url, s.final_url, s.domain, s.kind, s.fetch_method, s.http_status, s.content_hash, s.blob_key, s.text, s.title, s.published_at, s.lang, s.status, s.error, JSON.stringify(s.meta ?? {}), s.family_id, s.tier, s.tier_kind, s.snapshot_key, s.captured_at],
   );
   return rows[0]!;
 }
@@ -71,7 +72,7 @@ export async function getSource(idOrPrefix: string): Promise<SourceRow | null> {
 }
 
 export async function listSources(investigationId: string): Promise<SourceRow[]> {
-  return query<SourceRow>(`SELECT id, investigation_id, url, final_url, domain, kind, fetch_method, http_status, fetched_at, content_hash, blob_key, title, published_at, lang, status, error, meta, length(text) AS text_len, NULL AS text FROM sources WHERE investigation_id=$1 ORDER BY fetched_at`, [investigationId]);
+  return query<SourceRow>(`SELECT id, investigation_id, url, final_url, domain, kind, fetch_method, http_status, fetched_at, content_hash, blob_key, title, published_at, lang, status, error, meta, family_id, tier, tier_kind, snapshot_key, captured_at, length(text) AS text_len, NULL AS text FROM sources WHERE investigation_id=$1 ORDER BY fetched_at`, [investigationId]);
 }
 
 export async function hasExtraction(chunkHash: string, model: string, promptVersion: string): Promise<boolean> {
@@ -115,9 +116,9 @@ async function insertClaim(c: pg.PoolClient, cl: RelationClaim | AttributeClaim)
   const prov = [cl.id, cl.investigation_id, cl.source_id, cl.chunk_index, cl.chunk_hash, cl.quote, cl.span_start, cl.span_end, cl.span_method,
     cl.extractor_conf_raw, cl.verified, cl.attribute_class, cl.status, cl.reject_reason, cl.redaction_reason, JSON.stringify(cl.extractor),
     cl.schema_version, cl.temporal_kind, cl.valid_from_edtf, cl.valid_to_edtf, cl.date_edtf, cl.valid_from_lo, cl.valid_from_hi, cl.valid_to_lo, cl.valid_to_hi,
-    cl.date_lo, cl.date_hi, cl.time_qualifier, cl.asserted_at, cl.inferred, cl.derivation ? JSON.stringify(cl.derivation) : null, cl.extractor_conf_raw];
+    cl.date_lo, cl.date_hi, cl.time_qualifier, cl.asserted_at, cl.inferred, cl.derivation ? JSON.stringify(cl.derivation) : null, cl.extractor_conf_raw, cl.passage];
   const provCols = `id, investigation_id, source_id, chunk_index, chunk_hash, quote, span_start, span_end, span_method, confidence, verified, attribute_class, status, reject_reason, redaction_reason, extractor,
-    schema_version, temporal_kind, valid_from_edtf, valid_to_edtf, date_edtf, valid_from_lo, valid_from_hi, valid_to_lo, valid_to_hi, date_lo, date_hi, time_qualifier, asserted_at, inferred, derivation, extractor_conf_raw`;
+    schema_version, temporal_kind, valid_from_edtf, valid_to_edtf, date_edtf, valid_from_lo, valid_from_hi, valid_to_lo, valid_to_hi, date_lo, date_hi, time_qualifier, asserted_at, inferred, derivation, extractor_conf_raw, passage`;
   const ph = (n: number) => Array.from({ length: n }, (_, i) => `$${i + 1}`).join(",");
   if (cl.kind === "relation") {
     const vals = [...prov, JSON.stringify(cl.subject), cl.predicate, cl.predicate_specific, JSON.stringify(cl.object), JSON.stringify(cl.qualifiers)];
@@ -153,4 +154,12 @@ export async function investigationStats(investigationId: string) {
     [investigationId],
   );
   return s!;
+}
+
+export interface TierRow { pattern: string; tier: string; family_id: string | null; kind: string | null }
+export async function getTierRows(): Promise<TierRow[]> {
+  return query<TierRow>(`SELECT pattern, tier, family_id, kind FROM source_tiers`);
+}
+export async function setTier(pattern: string, tier: string, familyId: string | null, kind: string | null): Promise<void> {
+  await query(`INSERT INTO source_tiers (pattern, tier, family_id, kind) VALUES ($1,$2,$3,$4) ON CONFLICT (pattern) DO UPDATE SET tier=EXCLUDED.tier, family_id=EXCLUDED.family_id, kind=EXCLUDED.kind`, [pattern, tier, familyId, kind]);
 }

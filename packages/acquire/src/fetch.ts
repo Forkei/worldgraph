@@ -20,6 +20,8 @@ export interface FetchResult {
   /** raw payload to archive in the blob store (markdown for firecrawl, html for http) */
   raw: string;
   raw_ext: "md" | "html";
+  /** rendered HTML snapshot when available (captured before extraction) */
+  rendered: string | null;
   links: string[];
   attempts: { method: string; ok: boolean; note: string }[];
 }
@@ -72,10 +74,10 @@ async function viaFirecrawl(url: string, timeoutMs: number): Promise<FetchResult
   const res = await fetch("https://api.firecrawl.dev/v1/scrape", {
     method: "POST",
     headers: { Authorization: `Bearer ${env.firecrawlKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ url, formats: ["markdown", "links"], onlyMainContent: true, timeout: timeoutMs }),
+    body: JSON.stringify({ url, formats: ["markdown", "html", "links"], onlyMainContent: true, timeout: timeoutMs }),
     signal: AbortSignal.timeout(timeoutMs + 10_000),
   });
-  const j = (await res.json()) as { success?: boolean; error?: string; data?: { markdown?: string; links?: string[]; metadata?: Record<string, unknown> } };
+  const j = (await res.json()) as { success?: boolean; error?: string; data?: { markdown?: string; html?: string; links?: string[]; metadata?: Record<string, unknown> } };
   if (!res.ok || !j.success || !j.data) throw new Error(`firecrawl ${res.status}: ${j.error ?? "no data"}`);
   const meta = j.data.metadata ?? {};
   const md = j.data.markdown ?? "";
@@ -92,6 +94,7 @@ async function viaFirecrawl(url: string, timeoutMs: number): Promise<FetchResult
     text: markdownToText(md),
     raw: md,
     raw_ext: "md",
+    rendered: j.data.html ?? null,
     links: (j.data.links ?? []).slice(0, 500),
     attempts: [],
   };
@@ -102,10 +105,10 @@ async function viaHttp(url: string, timeoutMs: number): Promise<FetchResult> {
   const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,*/*;q=0.8" }, redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
   const ct = res.headers.get("content-type") ?? "";
   if (!ct.includes("html") && !ct.includes("xml") && !ct.includes("text/plain")) {
-    return { url, final_url: res.url || url, method: "http", kind: ct.includes("pdf") ? "pdf" : "unknown", http_status: res.status, title: null, published_at: null, lang: null, text: "", raw: "", raw_ext: "html", links: [], attempts: [] };
+    return { url, final_url: res.url || url, method: "http", kind: ct.includes("pdf") ? "pdf" : "unknown", http_status: res.status, title: null, published_at: null, lang: null, text: "", raw: "", raw_ext: "html", rendered: null, links: [], attempts: [] };
   }
   const html = await res.text();
-  return { ...readable(html, res.url || url), url, method: "http", http_status: res.status, raw: html, raw_ext: "html", attempts: [] };
+  return { ...readable(html, res.url || url), url, method: "http", http_status: res.status, raw: html, raw_ext: "html", rendered: html, attempts: [] };
 }
 
 async function viaArchive(url: string, timeoutMs: number): Promise<FetchResult> {
@@ -119,10 +122,10 @@ async function viaArchive(url: string, timeoutMs: number): Promise<FetchResult> 
   const r = readable(html, url);
   const ts = snap.timestamp ?? "";
   const published = ts.length >= 8 ? `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}` : null;
-  return { ...r, url, final_url: snap.url, method: "archive", http_status: res.status, published_at: r.published_at ?? published, raw: html, raw_ext: "html", attempts: [] };
+  return { ...r, url, final_url: snap.url, method: "archive", http_status: res.status, published_at: r.published_at ?? published, raw: html, raw_ext: "html", rendered: html, attempts: [] };
 }
 
-function readable(html: string, baseUrl: string): Omit<FetchResult, "url" | "method" | "http_status" | "raw" | "raw_ext" | "attempts"> {
+function readable(html: string, baseUrl: string): Omit<FetchResult, "url" | "method" | "http_status" | "raw" | "raw_ext" | "rendered" | "attempts"> {
   const { document } = parseHTML(html);
   const links: string[] = [];
   for (const a of document.querySelectorAll("a[href]")) {
