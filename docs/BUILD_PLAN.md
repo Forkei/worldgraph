@@ -33,6 +33,11 @@ vocabulary; a new feature reads them, it does not reshape them.
    five rules (no derived quantities; roles as qualifiers; time as written; stated vs inferred; candidate with
    parent). The ×0.8 multiplier is removed. *Test:* re-extract gold seed A from cache; no `other`; every
    relation resolves to a core predicate directly or via parent; `age` never appears as an attribute.
+   **✅ 2026-08-30 (`0f3086e`)** — seed A re-extracted under prompt `6764fa989be8` (Gemini 3.7 Flash, $0.54):
+   378 claims kept (309 rel + 69 attr), 8 rejected (2.1%, all real: stitched "…" quotes, page titles, URLs),
+   0 candidates needed (the 29-predicate tree covered everything: works_at 127 · board_member 48 · paid 21 ·
+   founded 18 · located_in 14 · …), 143/309 relations carry EDTF time, 15 marked inferred, no `age`, one
+   `founded_on` derived. The four old `other` claims were relabeled to `associated_with` + `candidate:`.
 2. **Sources v2**: capture before extraction (raw + rendered snapshot + hash), `source_family`, `source_tier`
    tables (editable), origin clusters on claims (near-duplicate passages). *Test:* ten planted copies of one
    press release count as one origin.
