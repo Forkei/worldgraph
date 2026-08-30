@@ -42,12 +42,12 @@ tool is hardcoded: types, predicates, rules, capabilities, tiers, and weights ar
 
 ### 1.1 Investigation · Question  [settled]
 ```
-Investigation { title, seed{kind, values{}, media[]}, policy, budget{usd, actions, minutes}, mode: auto|approve,
-                linked_investigations[], status }
+Investigation { title, seed{kind, values{}, media[]}, policy, ceiling?{usd|actions|minutes} (optional hard stop, unset by default),
+                mode: auto|approve, linked_investigations[], status }
 Question      { investigation_id, parent_question_id?, subject_ref, sought: text,
                 indicators: [{name, predicates[], record_classes[], weight}],
                 kill_criterion, stop_rule{min_independent_on[], mandatory_searched, stability_actions, max_open_contradictions},
-                budget_share, status: open|answered|killed|exhausted }
+                status: open|answered|killed|exhausted }
 ```
 Compiled from free text (door 1b) against the registry, the indicator table (§1.11) and the rules. Sub-questions
 are raised by hypotheses ("where was the wedding?") and by ring expansion ("household is silent → question it").
@@ -167,12 +167,13 @@ Justification, Hypothesis, Action, Decision, Capability.
 quote gate, domain/range, policy hook, append → mentions to resolution; hard keys harvested → match new
 `(node, key)` against open slots and hypotheses → lead/anomaly rules → Actions → the producing Action resulted.
 
-**Gap.** For each open Question and each entity within the ring budget: open slots ← shapes ⋈ expected-record
-rules ⋈ indicators (on the delta) → Actions for slots with a runnable capability; Actions for hypotheses'
-unchecked predicted observations (by diagnosticity); derivation rules with missing heads → slots. **Ring rule**:
-ring 0 = the subject; ring 1 = household, employer, officers; ring 2 = relatives, co-directors, agents; ring 3 =
-neighbours, associates. Rings are *computed* as graph distance along those predicate families, not listed. A
-ring opens only when the inner ring is exhausted or silent on an indicator; each hop logs its reason.
+**Gap.** For each open Question and each entity in its graph: open slots ← shapes ⋈ expected-record rules ⋈
+indicators (on the delta) → Actions for slots with a runnable capability; Actions for hypotheses' unchecked
+predicted observations (by diagnosticity); derivation rules with missing heads → slots. **Rings** (0 = the
+subject; 1 = household, employer, officers; 2 = relatives, co-directors, agents; 3 = neighbours, associates) are
+*computed* as graph distance along those predicate families and enter the score as one feature (§3); there is
+no gate that opens or closes a ring — an Action far from the subject runs whenever it serves an indicator or a
+hypothesis, and not otherwise. Each Action logs what it serves.
 
 **Evaluate.** On result: tag to the Action and to what it served; `found | partial (→ "what remains" Action) |
 no_trace (slot ← searched_absent with scope) | error`; delta pass — collective resolution (priority queue),
@@ -182,12 +183,12 @@ re-rank now.
 
 **Review.** Every N actions / T minutes: stale allocated → re-allocate or refer; pended past date → for
 allocation; slots older than TTL on covering predicates → stale; the Question's assumptions re-checked;
-budgets; contrarian pass (door 3c) on any hypothesis about to become established.
+contrarian pass (door 3c) on any hypothesis about to become established.
 
 **Stop / kill.** Kill when the kill criterion holds (seed unverifiable after mandatory records). Stop when the
-stop rule holds → proof argument (door 1p) → context-isolated check (door 3c) → dossier. Exhausted when budget
-is gone or the frontier is below floor with the stop rule unmet → report what remains. Budget is a ceiling,
-never the criterion.
+stop rule holds → proof argument (door 1p) → context-isolated check (door 3c) → dossier. Exhausted when
+the frontier is below floor with the stop rule unmet (or the optional ceiling is hit) → report what remains.
+Nothing about money or counts is ever the criterion for "done."
 
 ---
 
@@ -198,15 +199,19 @@ expected_gain = indicator weight (fills an indicator slot)
               + diagnosticity (tests a hypothesis: how far the result separates its exclusion group)
               + hard-key bonus (outputs include a hard key — hardest fact first)
               + structural delta (dependents that would re-derive; bridges; low-degree-high-evidence nodes)
-              + novelty (exploration budget only)
+              + novelty (a small exploration term, learned)
 p_find = rule expectedness × capability yield_prior × freshness ; cost = usd + time (+ human time for manual)
 tier_factor: L0/L1 = 1 · L2 = 0.9 · L3 = policy · L4 = 0
 ```
-**Ring budgets** (what (d) asked): the Question's budget is split so the graph cannot sprawl — the novice
-pattern is expanding everyone's neighbours. Default: rings 0–1 may use the whole share; ring 2 at most 30% of
-it; ring 3 at most 10%. These are the *caps*, not targets; a ring is only entered when the inner ring is silent.
-**[param]** Weak-key ban: Actions raised from D/E-grade or inferred facts are capped at Low unless a hypothesis
-names them. **Answer from the graph first**: every slot is checked against this graph and linked graphs before a
+**No budgets shape the search.** There are no ring caps and no per-ring allowances (v0.2 had them; removed —
+a fixed percentage per ring is a knob pretending to be judgment). What keeps the graph from sprawling is the
+score itself: an Action on a ring-3 neighbour has near-zero `expected_gain` unless some indicator or hypothesis
+of the Question is served by it — in which case it *should* run, however far out it is. `ring_decay` is one
+learned feature in the score, expressing that far-out facts usually serve the Question less, never a limit.
+The only budget that exists is an **optional hard ceiling** (`Investigation.ceiling`) the owner may set — it
+stops the loop, it never steers it; unset by default. What ends an investigation is the stop rule.
+**Weak-key ban**: Actions raised from D/E-grade or inferred facts are capped at Low unless a hypothesis names
+them. **Answer from the graph first**: every slot is checked against this graph and linked graphs before a
 capability runs; a hit is `found(cached)` at zero cost.
 
 ---
@@ -248,7 +253,7 @@ written. Nothing is deleted; the dossier shows every side.
 
 ## 6. Capabilities
 
-**Contract.** A capability receives `{inputs, question context, budget}` and returns `{claims[], sources[],
+**Contract.** A capability receives `{inputs, question context}` and returns `{claims[], sources[],
 nulls[] (with scope), links_found[], cost, tier_used}`. It never writes to the graph; `knowledge` does.
 
 **Cache.** One `source_cache` keyed by `(capability, normalized inputs)` with the capability's TTL. A bulk
@@ -304,7 +309,7 @@ other investigation (tier = that graph's grade).
 | (a) faces | reference matching allowed; external **later, not never** |
 | (b) acquired capabilities | human enables, for now |
 | (c) SerpAPI + Exa | approved |
-| (d) ring budgets | explained §3; defaults are caps: 0–1 full share, 2 ≤ 30%, 3 ≤ 10% |
+| (d) ring budgets | **removed** — no caps, no per-ring allowances; ring is a score feature; only an optional owner-set ceiling exists, and it stops, never steers (§3) |
 | (e) browser with own sessions | yes, default |
 
 Still to discuss (the maintainer: "this will need some work"): walk each section against the simplicity rules once
