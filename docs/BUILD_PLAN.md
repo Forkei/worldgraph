@@ -76,6 +76,19 @@ vocabulary; a new feature reads them, it does not reshape them.
    → identity hypotheses with predicted observations → split-test Action before merge → `same_as` decisions
    → entities/links as views; `wg candidates/decide/unmerge`. *Test:* B³ F1 ≥ 0.9 on the 300-pair gold set;
    registry-profile Person E lands as an identity hypothesis, never `different`; un-merge restores everything.
+   **✅ first cut 2026-08-30** — TypeScript-native (no Python sidecar). Provisional entities (exact normalized
+   name) → blocking (shared informative token, initialism, hard key) → additive log-odds scoring: hard-key
+   match +15 / conflict = never; token overlap weighted by **corpus-learned rarity** (idf); Jaro–Winkler;
+   org name structure (alias / manages / part_of / sibling by ordinal); initialism (AMCD); shared-neighbour
+   context; different long numeric ids = never. Bands ≥0.95 merge · 0.60–0.95 identity hypothesis · else
+   nothing. Decisions (`resolution_decisions`, human/llm/rule) win over scores and are reversible
+   (`superseded_by`); score-merges are recomputed every rebuild, never persisted. `entity_members` = the
+   un-merge path; slots migrate to the canonical entity. Related pairs become **derived links**
+   (`manages`, `part_of`, `associated_with[derived:sibling]`). Seed A: 214 names → 206 entities;
+   ACORN = Acorn Capital = Acorn Capital Associates LLC; Alder Maple = AMCD = Cedar & Dale; Acorn Capital
+   Management LP —manages→ Acorn Capital; Acorn II / III funds are siblings, not merged; Stanford GSB part_of
+   Stanford; 9 open identity hypotheses (San Francisco variants, Birch Insurance ↔ Birch, Org X ↔ Org Y).
+   Still to do: LLM judge (door 3) on the hypothesis band; gold set + B³ evaluation; the athle.fr test.
 6. **Decisions + the toolkit**: `decision` table; `ego · paths · intersect · fold · timeline · at · contested ·
    gaps · why · similar` as functions returning bounded, graded subgraphs; `wg dossier/neighbors/why`.
    *Test:* every toolkit call on seed A returns within 300 ms and every edge carries a grade and a why-chain.

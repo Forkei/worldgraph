@@ -2,7 +2,7 @@
 // wg — WorldGraph CLI (M0): db migrate · investigate · investigations · stats · claims · source · proposed · sql
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
-import { registry, getPolicy, env } from "@worldgraph/core";
+import { registry, getPolicy, env, uuidv7 } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
   findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourceClassification, getEvidencePriors,
@@ -21,7 +21,7 @@ const flags = parseArgs({
     seed: { type: "string" }, kind: { type: "string", default: "person" }, goal: { type: "string" }, title: { type: "string" },
     urls: { type: "string" }, url: { type: "string", multiple: true }, inv: { type: "string" }, model: { type: "string", default: DEFAULT_MODEL },
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
-    rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" },
+    rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -45,6 +45,10 @@ async function main() {
     case "cluster": return cluster(sub ?? s("inv"));
     case "rebuild": return rebuildCmd(sub ?? s("inv"));
     case "classify": return classify(sub ?? s("inv"));
+    case "candidates": return candidates(sub ?? s("inv"));
+    case "decide": return decide(sub ?? s("inv"), rest[0], rest[1], rest[2]);
+    case "unmerge": return unmerge(sub ?? s("inv"), rest[0]);
+    case "merges": return merges(sub ?? s("inv"));
     case "entities": return entities(sub ?? s("inv"));
     case "dossier": return dossier(sub ?? s("inv"), rest[0]);
     case "gaps": return gaps(sub ?? s("inv"));
@@ -67,6 +71,10 @@ async function main() {
   wg cluster <inv>               recompute origin clusters (independent sources per fact)
   wg rebuild <inv>               claims → entities, links, attributes (graded), slots
   wg classify <inv>              classify unclassified sources (doc kind, publisher, self-published)
+  wg merges <inv>                entities assembled from several names; related-not-merged pairs
+  wg candidates <inv>            open identity hypotheses (the uncertain band)
+  wg decide <inv> <a> <b> same|not_same|related:<kind>
+  wg unmerge <inv> "<name|id>"   split an entity back into its members (records not_same decisions)
   wg entities <inv> [--type person] [--limit 40]
   wg dossier <inv> "<name|id>"   one entity: keys, attributes, links (graded), slots
   wg gaps <inv>                  open slots (what is missing)
@@ -196,7 +204,7 @@ async function rebuildCmd(id?: string) {
   await syncRules();
   const t0 = Date.now();
   const st = await rebuild(inv.id, { currentPromptVersion: promptVersion(registry()) });
-  console.log(`rebuilt ${short(inv.id)} in ${((Date.now() - t0) / 1000).toFixed(1)}s: ${st.claims} claims → ${st.entities} entities · ${st.links} links · ${st.attributes} attributes`);
+  console.log(`rebuilt ${short(inv.id)} in ${((Date.now() - t0) / 1000).toFixed(1)}s: ${st.claims} claims → ${st.provisional} names → ${st.entities} entities (${st.merges} auto-merges, ${st.hypotheses} open identity hypotheses, ${st.related} related, ${st.guarded} blocked by hard-key conflict) · ${st.links} links · ${st.attributes} attributes`);
   console.log(`grades: ${Object.entries(st.by_grade).map(([g, n]) => `${g} ${n}`).join(" · ")}`);
   console.log(`slots: ${st.slots_found} found · ${st.slots_open} open · ${st.holes} interval holes`);
 }
@@ -283,6 +291,63 @@ async function classify(id?: string) {
     console.log(`${short(r.id)}  ${c.doc_kind.padEnd(11)} ${(c.self_published ? "self" : "").padEnd(5)} pub=${c.publisher_name.slice(0, 28).padEnd(28)} about=${c.about.slice(0, 24).padEnd(24)} ${r.url.slice(0, 60)}`);
   }
   console.log(`classified ${rows.length} sources · $${usd.toFixed(4)}`);
+}
+
+async function candidates(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg candidates <inv>");
+  const rows = await query<{ id: string; pattern: any; score: number; evidence: any; status: string }>(`SELECT id, pattern, score, evidence, status FROM hypotheses WHERE investigation_id=$1 AND kind='identity' AND status='open' ORDER BY score DESC LIMIT $2`, [inv.id, Number(s("limit") ?? 40)]);
+  console.log(`${rows.length} open identity hypotheses (decide with: wg decide <inv> <a> <b> same|not_same|related:<kind>)\n`);
+  for (const r of rows) {
+    const f = r.evidence?.[0]?.features ?? {};
+    console.log(`${(r.score * 100).toFixed(0).padStart(3)}%  ${r.pattern.type.padEnd(12)} ${short(r.pattern.a_id)} ${String(r.pattern.a_name).padEnd(34)} ↔ ${short(r.pattern.b_id)} ${String(r.pattern.b_name).padEnd(34)}  jw=${f.jw} tok=${f.token_overlap} ctx=${f.context_jaccard}${f.hard_key && f.hard_key !== "none" ? " key=" + f.hard_key : ""}${f.org_structure && f.org_structure !== "none" ? " org=" + f.org_structure : ""}`);
+  }
+}
+
+async function decide(id?: string, a?: string, b?: string, verdictRaw?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || !a || !b || !verdictRaw) return fail("wg decide <inv> <a> <b> same|not_same|related:<kind> [--note]");
+  const resolveProv = async (ref: string) => {
+    const rows = await query<{ provisional_id: string; name: string }>(`SELECT provisional_id, name FROM entity_members m JOIN entities e ON e.id=m.entity_id WHERE e.investigation_id=$1 AND (m.provisional_id::text LIKE $2 OR lower(m.name)=lower($3))`, [inv.id, `${ref}%`, ref]);
+    if (rows.length !== 1) return fail(`"${ref}" matched ${rows.length} provisional entities (use the id prefix from wg candidates)`);
+    return rows[0]!.provisional_id;
+  };
+  let pa = await resolveProv(a), pb = await resolveProv(b);
+  if (pa > pb) [pa, pb] = [pb, pa];
+  const [verdict, kind] = verdictRaw.split(":") as [string, string | undefined];
+  if (!["same", "not_same", "related"].includes(verdict)) return fail("verdict must be same | not_same | related:<kind>");
+  const newId = uuidv7();
+  await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [newId, inv.id, pa, pb]);
+  await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, related_kind, method, note) VALUES ($1,$2,$3,$4,$5,$6,'human',$7)`, [newId, inv.id, pa, pb, verdict, kind ?? null, s("note") ?? null]);
+  await audit({ investigation_id: inv.id, actor: "human", action: "resolution.decide", detail: { a: pa, b: pb, verdict, kind } });
+  console.log(`decision recorded: ${short(pa)} ${verdict}${kind ? ":" + kind : ""} ${short(pb)} — rebuilding`);
+  await rebuildCmd(inv.id);
+}
+
+async function unmerge(id?: string, ref?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || !ref) return fail('wg unmerge <inv> "<name|id>"');
+  const eid = await findEntity(inv.id, ref);
+  const members = await query<{ provisional_id: string; name: string }>(`SELECT provisional_id, name FROM entity_members WHERE entity_id=$1 ORDER BY claim_count DESC`, [eid]);
+  if (members.length < 2) return fail("entity has a single member; nothing to un-merge");
+  for (let i = 0; i < members.length; i++) for (let j = i + 1; j < members.length; j++) {
+    let pa = members[i]!.provisional_id, pb = members[j]!.provisional_id; if (pa > pb) [pa, pb] = [pb, pa];
+    const newId = uuidv7();
+    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [newId, inv.id, pa, pb]);
+    await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, method, note) VALUES ($1,$2,$3,$4,'not_same','human','unmerge')`, [newId, inv.id, pa, pb]);
+  }
+  await audit({ investigation_id: inv.id, actor: "human", action: "resolution.unmerge", detail: { entity: eid, members: members.map((m) => m.name) } });
+  console.log(`un-merged ${members.map((m) => m.name).join(" | ")} — rebuilding`);
+  await rebuildCmd(inv.id);
+}
+
+async function merges(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg merges <inv>");
+  const rows = await query<{ name: string; type: string; members: string[]; n: string }>(`SELECT e.canonical_name name, e.type, array_agg(m.name ORDER BY m.claim_count DESC) members, count(*) n FROM entities e JOIN entity_members m ON m.entity_id=e.id WHERE e.investigation_id=$1 GROUP BY e.id HAVING count(*) > 1 ORDER BY count(*) DESC, e.claim_count DESC LIMIT $2`, [inv.id, Number(s("limit") ?? 40)]);
+  for (const r of rows) console.log(`${r.type.padEnd(12)} ${r.name.padEnd(34)} = ${r.members.join(" | ")}`);
+  const rel = await query<{ a: string; b: string; predicate: string; derivation: string }>(`SELECT s.canonical_name a, d.canonical_name b, l.predicate || coalesce(' ' || l.predicate_specific, '') predicate, l.derivation FROM links l JOIN entities s ON s.id=l.src_id JOIN entities d ON d.id=l.dst_id WHERE l.investigation_id=$1 AND l.derived ORDER BY l.predicate, a LIMIT $2`, [inv.id, Number(s("limit") ?? 40)]);
+  if (rel.length) { console.log("\nrelated, not merged (derived links):"); for (const r of rel) console.log(`  ${r.a} —${r.predicate}→ ${r.b}`); }
 }
 
 async function investigations() {

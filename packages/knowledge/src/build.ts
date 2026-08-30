@@ -8,6 +8,7 @@ import { grade, betterTier, type EvidenceProfile } from "./grade.ts";
 import { intervalHoles } from "./gaps.ts";
 import { loadRuleFiles, slotsFor, type Rule, type EntityView } from "./rules.ts";
 import { tierForClaim, type SourceFacts } from "./reliability.ts";
+import { resolve as resolveEntities, type Provisional, type Decision } from "./resolve.ts";
 
 interface ClaimRow {
   id: string; kind: "relation" | "attribute"; source_id: string; tier: string | null; origin: string | null; span_method: string | null;
@@ -24,7 +25,7 @@ const dstr = (v: string | Date | null) => (v == null ? null : v instanceof Date 
 const minD = (a: string | null, b: string | null) => (a && b ? (a < b ? a : b) : a ?? b);
 const maxD = (a: string | null, b: string | null) => (a && b ? (a > b ? a : b) : a ?? b);
 
-export interface RebuildStats { claims: number; entities: number; links: number; attributes: number; slots_open: number; slots_found: number; holes: number; by_grade: Record<string, number> }
+export interface RebuildStats { claims: number; provisional: number; entities: number; merges: number; hypotheses: number; related: number; guarded: number; links: number; attributes: number; slots_open: number; slots_found: number; holes: number; by_grade: Record<string, number> }
 
 export async function syncRules(rules: Rule[] = loadRuleFiles()): Promise<number> {
   await withTx(async (c) => {
@@ -100,6 +101,41 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   const attrMap = new Map<string, string>();
   for (const a of attr) { const e = entityOf(a.entity!, a.id, a.asserted_at); attrMap.set(a.id, e); claimEnts.push({ claim_id: a.id, claim_kind: "attribute", role: "entity", entity_id: e }); }
 
+  // 1a. resolution: provisional (exact-name) entities → clusters, using decisions (records) and scores
+  const neighborsOf = new Map<string, Set<string>>();
+  for (const r of rel) { const m = relMap.get(r.id)!; (neighborsOf.get(m.src) ?? neighborsOf.set(m.src, new Set()).get(m.src)!).add(m.dst); (neighborsOf.get(m.dst) ?? neighborsOf.set(m.dst, new Set()).get(m.dst)!).add(m.src); }
+  const provisional: Provisional[] = [...ents.values()].map((e) => ({
+    id: e.id, type: e.type, kind: e.kind, name: [...e.names.entries()].sort((a, b) => b[1] - a[1])[0]![0], name_norm: nameNorm([...e.names.entries()].sort((a, b) => b[1] - a[1])[0]![0], e.type) || "unnamed",
+    keys: Object.fromEntries(Object.entries(e.keys).map(([k, v]) => [k, [...v]])), neighbors: neighborsOf.get(e.id) ?? new Set(), claim_count: e.claims.size,
+  }));
+  const decisions = (await query<Decision & { a_id: string; b_id: string }>(`SELECT a_id, b_id, verdict, related_kind FROM resolution_decisions WHERE investigation_id=$1 AND superseded_by IS NULL`, [investigationId]));
+  const res = resolveEntities(provisional, decisions);
+  // canonical id per cluster = member with most claims (ties: smaller id); remap every provisional id → canonical
+  const clusterMembers = new Map<string, Ent[]>();
+  for (const e of ents.values()) { const root = res.clusters.get(e.id)!; (clusterMembers.get(root) ?? clusterMembers.set(root, []).get(root)!).push(e); }
+  const canonicalOf = new Map<string, string>();
+  const merged = new Map<string, Ent>();
+  for (const members of clusterMembers.values()) {
+    members.sort((a, b) => b.claims.size - a.claims.size || (a.id < b.id ? -1 : 1));
+    const head = members[0]!;
+    const m: Ent = { id: head.id, type: head.type, kind: head.kind, names: new Map(), aliases: new Set(), keys: {}, claims: new Set(), first: null, last: null };
+    for (const x of members) {
+      canonicalOf.set(x.id, head.id);
+      for (const [n, c] of x.names) m.names.set(n, (m.names.get(n) ?? 0) + c);
+      for (const a of x.aliases) m.aliases.add(a);
+      for (const [k, vs] of Object.entries(x.keys)) for (const v of vs) (m.keys[k] ??= new Set()).add(v);
+      for (const c of x.claims) m.claims.add(c);
+      m.first = minD(m.first, x.first); m.last = maxD(m.last, x.last);
+      if (!m.kind && x.kind) m.kind = x.kind;
+    }
+    merged.set(head.id, m);
+  }
+  const provisionalCount = ents.size;
+  ents.clear(); for (const [k, v] of merged) ents.set(k, v);
+  for (const [cid, m] of relMap) relMap.set(cid, { src: canonicalOf.get(m.src)!, dst: canonicalOf.get(m.dst)! });
+  for (const [cid, e] of attrMap) attrMap.set(cid, canonicalOf.get(e)!);
+  for (const ce of claimEnts) ce.entity_id = canonicalOf.get(ce.entity_id)!;
+
   // 1b. per-claim reliability: doc-kind prior, self-published-about-itself bump, learned adjustment, owner override
   for (const f of srcFacts.values()) {
     if (!f.publisher_name) continue;
@@ -174,6 +210,50 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
       await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('entity',$1,$2)`, [e.id, JSON.stringify([...e.claims].map((id) => ({ kind: "claim", id })))]);
     }
     for (const ce of claimEnts) await c.query(`INSERT INTO claim_entities (claim_id, claim_kind, role, entity_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [ce.claim_id, ce.claim_kind, ce.role, ce.entity_id]);
+    // membership (the un-merge path) + slots that belonged to a now-merged provisional entity move to the canonical one
+    await c.query(`DELETE FROM entity_members WHERE entity_id IN (SELECT id FROM entities WHERE investigation_id=$1)`, [investigationId]);
+    for (const [root, members] of clusterMembers) {
+      const head = canonicalOf.get(root)!;
+      for (const x of members) {
+        await c.query(`INSERT INTO entity_members (entity_id, provisional_id, name, claim_count) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [head, x.id, [...x.names.entries()].sort((a, b) => b[1] - a[1])[0]![0], x.claims.size]);
+        if (x.id !== head) await c.query(`UPDATE slots s SET entity_id=$2, updated_at=now() WHERE s.entity_id=$1 AND NOT EXISTS (SELECT 1 FROM slots t WHERE t.entity_id=$2 AND t.kind=s.kind AND t.key=s.key AND coalesce(t.window_lo,'0001-01-01')=coalesce(s.window_lo,'0001-01-01'))`, [x.id, head]);
+      }
+    }
+    // identity hypotheses for the uncertain band (records; statuses set by decisions)
+    const provName = new Map(provisional.map((p) => [p.id, p.name]));
+    const provType = new Map(provisional.map((p) => [p.id, p.type]));
+    for (const h of res.hypotheses) {
+      await c.query(
+        `INSERT INTO hypotheses (id, investigation_id, kind, exclusion_group, pattern, evidence, status, score)
+         VALUES ($1,$2,'identity',$3,$4,$5,'open',$6)
+         ON CONFLICT (investigation_id, (pattern->>'a_id'), (pattern->>'b_id')) WHERE kind='identity'
+         DO UPDATE SET score=EXCLUDED.score, evidence=EXCLUDED.evidence, updated_at=now()`,
+        [uuidv7(), investigationId, `identity:${h.a}`, JSON.stringify({ a_id: h.a, b_id: h.b, a_name: provName.get(h.a), b_name: provName.get(h.b), type: provType.get(h.a) }), JSON.stringify([{ kind: "score", features: h.features }]), h.p],
+      );
+    }
+    // hypotheses whose pair has a decision are closed
+    await c.query(`UPDATE hypotheses h SET status = CASE d.verdict WHEN 'same' THEN 'established' ELSE 'disproved' END, decided_by = d.method, updated_at = now()
+                     FROM resolution_decisions d WHERE h.investigation_id=$1 AND h.kind='identity' AND h.status='open' AND d.investigation_id=$1 AND d.superseded_by IS NULL
+                      AND d.a_id::text = h.pattern->>'a_id' AND d.b_id::text = h.pattern->>'b_id'`, [investigationId]);
+    // open identity hypotheses no longer in the uncertain band are abandoned (a decision on them stays as is)
+    const openPairs = res.hypotheses.map((h) => `${h.a}|${h.b}`);
+    await c.query(`UPDATE hypotheses SET status='abandoned', updated_at=now() WHERE investigation_id=$1 AND kind='identity' AND status='open' AND NOT ((pattern->>'a_id') || '|' || (pattern->>'b_id') = ANY($2::text[]))`, [investigationId, openPairs]);
+    // related pairs (manages / part_of / sibling) become DERIVED links between the canonical entities
+    for (const r of res.related) {
+      const kind = r.related_kind ?? "sibling";
+      const srcProv = (r.features.related_src as string | undefined) ?? r.a;
+      const src = canonicalOf.get(srcProv)!, dst = canonicalOf.get(srcProv === r.a ? r.b : r.a)!;
+      if (src === dst) continue;
+      const predicate = kind === "manages" ? "manages" : kind === "part_of" ? "part_of" : "associated_with";
+      const specific = kind === "sibling" ? "derived:sibling" : null;
+      const id = stableId(investigationId, "link", src, predicate, specific ?? "", dst);
+      await c.query(
+        `INSERT INTO links (id, investigation_id, src_id, predicate, predicate_specific, dst_id, qualifiers, claim_ids, evidence_count, independent_origins, primary_origins, tier_best, contested, reliability, credibility, grade, derived, derivation)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'{}',0,0,0,'F',false,'F',6,'unverified',true,$8) ON CONFLICT DO NOTHING`,
+        [id, investigationId, src, predicate, specific, dst, JSON.stringify(kind === "sibling" ? { kind: "sibling" } : {}), `resolver:name_structure:${kind}`],
+      );
+      await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('link',$1,$2) ON CONFLICT DO NOTHING`, [id, JSON.stringify([{ kind: "rule", id: `resolver:name_structure:${kind}` }, { kind: "entity", id: src }, { kind: "entity", id: dst }])]);
+    }
 
     for (const g of linkAgg.values()) {
       const p = profile(g, false), gr = grade(p), t = timeAgg(g.rows);
@@ -246,6 +326,6 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     (rebuildStatsHolder as { v: Partial<RebuildStats> }).v = { slots_open: slotsOpen, slots_found: slotsFound, holes };
   });
   const extra = (rebuildStatsHolder as { v: Partial<RebuildStats> }).v;
-  return { claims: rows.length, entities: ents.size, links: linkAgg.size, attributes: attrAgg.size, slots_open: extra.slots_open ?? 0, slots_found: extra.slots_found ?? 0, holes: extra.holes ?? 0, by_grade: byGrade };
+  return { claims: rows.length, provisional: provisionalCount, entities: ents.size, merges: res.merges.length, hypotheses: res.hypotheses.length, related: res.related.length, guarded: res.guarded.length, links: linkAgg.size, attributes: attrAgg.size, slots_open: extra.slots_open ?? 0, slots_found: extra.slots_found ?? 0, holes: extra.holes ?? 0, by_grade: byGrade };
 }
 const rebuildStatsHolder: { v: Partial<RebuildStats> } = { v: {} };

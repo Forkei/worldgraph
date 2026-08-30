@@ -7,3 +7,4 @@ export * from "./gaps.ts";
 export * from "./rules.ts";
 export * from "./build.ts";
 export * from "./reliability.ts";
+export * from "./resolve.ts";
