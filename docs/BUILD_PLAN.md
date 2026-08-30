@@ -64,8 +64,14 @@ vocabulary; a new feature reads them, it does not reshape them.
    Seed A (v2 claims only): 309 claims → 214 entities · 228 links · 66 attributes; grades established 26 ·
    corroborated 11 · single_source 207 · unverified 50; slots 69 found · 728 open · 1 interval hole. Person A's
    dossier reads correctly (e.g. board_member Harbor Medical 2010→2016, **established B1, 3 origins**).
-   Still to do in 4: delete-and-rederive on retraction (needs decisions, M1.5) and the "subject's own site =
-   primary" tier rule (acorncap.com currently grades F).
+   Still to do in 4: delete-and-rederive on retraction (needs decisions, M1.5).
+   **✅ reliability v2 (same day)** — the maintainer: "we don't hardcode that a certain website is this." The seeded
+   domain-tier table is gone. Each source is classified from its own content (`wg classify`, Gemini Flash-Lite,
+   ~$0.0006/source): document kind, publisher, self-published. Reliability per claim = evidence prior by
+   document kind (14 rows, adjusted by observed agreement) → +1 step if self-published about the entity the
+   claim concerns → learned adjustment (≥ 20 observations) → owner override (empty by default). Result on
+   seed A: acorncap.com correctly classified "profile, self-published by ACORN"; Person A's Birch board seat from
+   it now grades B2 instead of F6; grades established 35 · corroborated 2 · single_source 257.
 5. **Resolution as claims**: mentions → blocking → scoring (Fellegi–Sunter, learned u/m; sidecar or TS port)
    → identity hypotheses with predicted observations → split-test Action before merge → `same_as` decisions
    → entities/links as views; `wg candidates/decide/unmerge`. *Test:* B³ F1 ≥ 0.9 on the 300-pair gold set;

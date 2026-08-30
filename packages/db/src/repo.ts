@@ -39,6 +39,7 @@ export interface SourceRow {
   fetch_method: string; http_status: number | null; fetched_at: Date; content_hash: string | null; blob_key: string | null;
   text: string | null; title: string | null; published_at: Date | null; lang: string | null; status: string; error: string | null; meta: Record<string, unknown>;
   family_id: string | null; tier: string | null; tier_kind: string | null; snapshot_key: string | null; captured_at: Date | null;
+  doc_kind?: string | null; publisher_name?: string | null; publisher_type?: string | null; self_published?: boolean | null;
 }
 
 export async function findSourceByUrl(investigationId: string, url: string): Promise<SourceRow | null> {
@@ -72,7 +73,7 @@ export async function getSource(idOrPrefix: string): Promise<SourceRow | null> {
 }
 
 export async function listSources(investigationId: string): Promise<SourceRow[]> {
-  return query<SourceRow>(`SELECT id, investigation_id, url, final_url, domain, kind, fetch_method, http_status, fetched_at, content_hash, blob_key, title, published_at, lang, status, error, meta, family_id, tier, tier_kind, snapshot_key, captured_at, length(text) AS text_len, NULL AS text FROM sources WHERE investigation_id=$1 ORDER BY fetched_at`, [investigationId]);
+  return query<SourceRow>(`SELECT id, investigation_id, url, final_url, domain, kind, fetch_method, http_status, fetched_at, content_hash, blob_key, title, published_at, lang, status, error, meta, family_id, tier, tier_kind, snapshot_key, captured_at, doc_kind, publisher_name, publisher_type, self_published, length(text) AS text_len, NULL AS text FROM sources WHERE investigation_id=$1 ORDER BY fetched_at`, [investigationId]);
 }
 
 export async function hasExtraction(chunkHash: string, model: string, promptVersion: string): Promise<boolean> {
@@ -162,4 +163,12 @@ export async function getTierRows(): Promise<TierRow[]> {
 }
 export async function setTier(pattern: string, tier: string, familyId: string | null, kind: string | null): Promise<void> {
   await query(`INSERT INTO source_tiers (pattern, tier, family_id, kind) VALUES ($1,$2,$3,$4) ON CONFLICT (pattern) DO UPDATE SET tier=EXCLUDED.tier, family_id=EXCLUDED.family_id, kind=EXCLUDED.kind`, [pattern, tier, familyId, kind]);
+}
+
+export async function getEvidencePriors(): Promise<Record<string, string>> {
+  const rows = await query<{ doc_kind: string; tier: string }>(`SELECT doc_kind, tier FROM evidence_priors`);
+  return Object.fromEntries(rows.map((r) => [r.doc_kind, r.tier]));
+}
+export async function setSourceClassification(id: string, c: { doc_kind: string; publisher_name: string; publisher_type: string; self_published: boolean }): Promise<void> {
+  await query(`UPDATE sources SET doc_kind=$2, publisher_name=$3, publisher_type=$4, self_published=$5, classified_at=now() WHERE id=$1`, [id, c.doc_kind, c.publisher_name || null, c.publisher_type, c.self_published]);
 }

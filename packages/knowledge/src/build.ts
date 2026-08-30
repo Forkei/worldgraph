@@ -7,6 +7,7 @@ import { nameNorm, identityKeysFromHints, stableId } from "./normalize.ts";
 import { grade, betterTier, type EvidenceProfile } from "./grade.ts";
 import { intervalHoles } from "./gaps.ts";
 import { loadRuleFiles, slotsFor, type Rule, type EntityView } from "./rules.ts";
+import { tierForClaim, type SourceFacts } from "./reliability.ts";
 
 interface ClaimRow {
   id: string; kind: "relation" | "attribute"; source_id: string; tier: string | null; origin: string | null; span_method: string | null;
@@ -50,6 +51,13 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
       );
     }
   }
+  const priors = Object.fromEntries((await query<{ doc_kind: string; tier: string }>(`SELECT doc_kind, tier FROM evidence_priors`)).map((r) => [r.doc_kind, r.tier]));
+  const overrides = new Map((await query<{ pattern: string; tier: string }>(`SELECT pattern, tier FROM source_tiers`)).map((r) => [r.pattern, r.tier]));
+  const srcFacts = new Map<string, SourceFacts & { domain: string | null; publisher_name: string | null }>();
+  for (const srow of await query<{ id: string; domain: string | null; doc_kind: string | null; self_published: boolean | null; publisher_name: string | null; agree_count: number; contradict_count: number }>(`SELECT id, domain, doc_kind, self_published, publisher_name, agree_count, contradict_count FROM sources WHERE investigation_id=$1`, [investigationId])) {
+    const ov = [...overrides.entries()].find(([p]) => srow.domain && (srow.domain === p || srow.domain.endsWith("." + p)))?.[1] ?? null;
+    srcFacts.set(srow.id, { doc_kind: srow.doc_kind, self_published: srow.self_published, publisher_entity_id: null, agree_count: srow.agree_count, contradict_count: srow.contradict_count, override_tier: ov, domain: srow.domain, publisher_name: srow.publisher_name });
+  }
   const rows = await query<ClaimRow>(
     `SELECT c.id, 'relation' AS kind, c.source_id, s.tier, c.origin_cluster_id AS origin, c.span_method, c.subject, c.object, NULL::jsonb AS entity,
             c.predicate, c.predicate_specific, c.qualifiers, NULL AS key, NULL AS key_specific, NULL AS value, NULL AS value_norm, NULL AS datatype,
@@ -91,6 +99,24 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   }
   const attrMap = new Map<string, string>();
   for (const a of attr) { const e = entityOf(a.entity!, a.id, a.asserted_at); attrMap.set(a.id, e); claimEnts.push({ claim_id: a.id, claim_kind: "attribute", role: "entity", entity_id: e }); }
+
+  // 1b. per-claim reliability: doc-kind prior, self-published-about-itself bump, learned adjustment, owner override
+  for (const f of srcFacts.values()) {
+    if (!f.publisher_name) continue;
+    const norm = nameNorm(f.publisher_name, "organization");
+    const idOrg = stableId(investigationId, "organization", norm), idPerson = stableId(investigationId, "person", nameNorm(f.publisher_name, "person"));
+    f.publisher_entity_id = ents.has(idOrg) ? idOrg : ents.has(idPerson) ? idPerson : null;
+  }
+  const memberOfPublisher = new Set<string>();   // entity ids that are members/officers of some publisher entity
+  for (const r of rel) if (["member_of", "works_at", "board_member", "founded"].includes(r.predicate ?? "")) { const m = relMap.get(r.id)!; memberOfPublisher.add(`${m.src}|${m.dst}`); }
+  const tierOf = (r: ClaimRow): string => {
+    const f = srcFacts.get(r.source_id);
+    if (!f) return r.tier ?? "F";
+    const ents2 = r.kind === "relation" ? [relMap.get(r.id)!.src, relMap.get(r.id)!.dst] : [attrMap.get(r.id)!];
+    const about = !!f.publisher_entity_id && (ents2.includes(f.publisher_entity_id) || ents2.some((e) => memberOfPublisher.has(`${e}|${f.publisher_entity_id}`)));
+    return tierForClaim(f, priors, about);
+  };
+  for (const r of rows) r.tier = tierOf(r);
 
   // 2. links and attributes with evidence profiles
   interface Agg { ids: string[]; origins: Map<string, string>; tiers: string[]; fuzzy: number; rows: ClaimRow[] }

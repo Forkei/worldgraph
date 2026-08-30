@@ -62,6 +62,15 @@ Captured **before** extraction (raw + rendered snapshot + hash), so a claim's pa
 `source_family_id` groups outlets that share an upstream (all US people-search aggregators = one family; a
 PR-wire syndication = one family) — the independence rule, as data.
 
+**Reliability is never a property of a domain** (decision 2026-08-30: no hardcoded site lists). Each source
+is classified *from its own content* — `doc_kind` (record, filing, minutes, roster, directory, article, paper,
+transcript, profile, page, post, listing, forum), `publisher_name`, `self_published` — and a claim's
+reliability tier is computed per claim: a small **evidence prior by document kind** (a filing is not a forum
+post; ~14 rows, adjusted by observed agreement), **+1 step when the page is self-published about the entity it
+concerns** (a company's own team page is authoritative about its roster — but not independent), a **learned
+adjustment** once a source has ≥ 20 observed agreements/contradictions with independent origins, and an
+**owner override** if one was decided. `source_tiers` holds only overrides; it is empty by default.
+
 ### 1.3 Claim  [settled; M0/M1]
 Relation claims and attribute claims as in `M1_DESIGN.md` §2 — quote-gated, EDTF time, `asserted_at`,
 `derivation`, `attribute_class`, `extractor_conf_raw` never scored. The quote's span is a character range in

@@ -5,11 +5,11 @@ import { readFileSync } from "node:fs";
 import { registry, getPolicy, env } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
-  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier,
+  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourceClassification, getEvidencePriors,
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion } from "@worldgraph/extract";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource } from "@worldgraph/extract";
 import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -44,6 +44,7 @@ async function main() {
     case "ontology": return ontology(sub);
     case "cluster": return cluster(sub ?? s("inv"));
     case "rebuild": return rebuildCmd(sub ?? s("inv"));
+    case "classify": return classify(sub ?? s("inv"));
     case "entities": return entities(sub ?? s("inv"));
     case "dossier": return dossier(sub ?? s("inv"), rest[0]);
     case "gaps": return gaps(sub ?? s("inv"));
@@ -65,6 +66,7 @@ async function main() {
   wg ontology [predicates|types|keys]   the registry as the extractor sees it
   wg cluster <inv>               recompute origin clusters (independent sources per fact)
   wg rebuild <inv>               claims → entities, links, attributes (graded), slots
+  wg classify <inv>              classify unclassified sources (doc kind, publisher, self-published)
   wg entities <inv> [--type person] [--limit 40]
   wg dossier <inv> "<name|id>"   one entity: keys, attributes, links (graded), slots
   wg gaps <inv>                  open slots (what is missing)
@@ -129,7 +131,8 @@ async function investigate() {
             meta: { attempts: r.attempts, links: r.links.length }, family_id: t.family_id, tier: t.tier, tier_kind: t.kind, snapshot_key: snapKey, captured_at: new Date(),
           });
           totals.fetched++;
-          console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · tier ${t.tier}${t.family_id ? " (" + t.family_id + ")" : ""} · "${(r.title ?? "").slice(0, 60)}"`);
+          try { const { c } = await classifySource({ url: r.final_url, title: r.title, text: r.text }); await setSourceClassification(src.id, c); console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · ${c.doc_kind}${c.self_published ? " (self-published)" : ""} by ${c.publisher_name || "?"} · "${(r.title ?? "").slice(0, 50)}"`); }
+          catch (e) { console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · (classification failed: ${String((e as Error).message).slice(0, 60)})`); }
         }
       } catch (e) {
         totals.failed++;
@@ -179,8 +182,12 @@ async function cluster(id?: string) {
 }
 
 async function tiers(pattern?: string, tier?: string) {
-  if (pattern && tier) { await setTier(pattern, tier.toUpperCase(), null, null); console.log(`set ${pattern} → ${tier.toUpperCase()}`); }
-  for (const r of await getTierRows()) console.log(`${r.tier}  ${r.pattern.padEnd(28)} ${(r.kind ?? "").padEnd(11)} ${r.family_id ?? ""}`);
+  if (pattern && tier) { await setTier(pattern, tier.toUpperCase(), null, null); console.log(`override: ${pattern} → ${tier.toUpperCase()}`); }
+  console.log("evidence priors (by document kind; learned counts adjust them):");
+  for (const [k, t] of Object.entries(await getEvidencePriors())) console.log(`  ${t}  ${k}`);
+  const ov = await getTierRows();
+  console.log(ov.length ? "owner overrides:" : "owner overrides: none");
+  for (const r of ov) console.log(`  ${r.tier}  ${r.pattern}`);
 }
 
 async function rebuildCmd(id?: string) {
@@ -262,6 +269,20 @@ async function gaps(id?: string) {
 async function rulesCmd(sub?: string) {
   if (sub === "sync") { const n = await syncRules(); console.log(`synced ${n} rules`); return; }
   for (const r of loadRuleFiles()) console.log(`${r.kind.padEnd(16)} ${r.id.padEnd(40)} ${r.name}`);
+}
+
+async function classify(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg classify <inv>");
+  const rows = await query<{ id: string; url: string; title: string | null; text: string }>(`SELECT id, coalesce(final_url, url) url, title, text FROM sources WHERE investigation_id=$1 AND text IS NOT NULL AND classified_at IS NULL`, [inv.id]);
+  let usd = 0;
+  for (const r of rows) {
+    const { c, usd: u } = await classifySource({ url: r.url, title: r.title, text: r.text });
+    usd += u;
+    await setSourceClassification(r.id, c);
+    console.log(`${short(r.id)}  ${c.doc_kind.padEnd(11)} ${(c.self_published ? "self" : "").padEnd(5)} pub=${c.publisher_name.slice(0, 28).padEnd(28)} about=${c.about.slice(0, 24).padEnd(24)} ${r.url.slice(0, 60)}`);
+  }
+  console.log(`classified ${rows.length} sources · $${usd.toFixed(4)}`);
 }
 
 async function investigations() {
