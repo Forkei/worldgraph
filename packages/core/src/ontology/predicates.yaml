@@ -1,102 +1,248 @@
-# Predicates (edge types). All directional; `inverse` is the label used when reading the edge backwards.
-# `domain`/`range` are node types allowed as subject/object ('*' = any). `props` are the property keys the
-# extractor may attach. `attribute_class` is the governance floor for claims of this predicate.
-# `derived: true` predicates are computed by the graph build (M1+), never extracted.
-works_at:
-  inverse: employs
-  domain: [person]
-  range: [organization]
-  props: [role, department, valid_from, valid_to, date_precision]
-studied_at:
-  inverse: educated
-  domain: [person]
-  range: [organization]
-  props: [degree, field, valid_from, valid_to, date_precision]
-lives_at:
-  inverse: residence_of
-  domain: [person]
-  range: [place]
-  props: [valid_from, valid_to, kind, date_precision]
-  attribute_class: restricted
-located_in:
-  inverse: contains
-  domain: [place, organization, event]
-  range: [place]
-  transitive: true
-related_to:
-  inverse: related_to
-  domain: [person]
-  range: [person]
-  props: [relation]
-  attribute_class: sensitive
+# Predicates v2 — a shallow hierarchy (≤ 3 levels). Every predicate except the root has a parent; a claim is
+# queryable at every ancestor. `candidate:<name>` predicates emitted by the extractor MUST name a parent from
+# this list and are stored as the parent with `predicate_specific = candidate:<name>`.
+#
+# Fields: parent · inverse · domain/range (node types, '*' = any) · qualifiers (per-predicate properties;
+# valid_from / valid_to / date / time_qualifier are universal and live on the claim, not here) ·
+# attribute_class floor · symmetric · transitive · emittable (root is not) · derived / system (never extracted).
+
 associated_with:
   inverse: associated_with
   domain: ["*"]
   range: ["*"]
-  props: [context, strength]
-participated_in:
-  inverse: had_participant
-  domain: [person, organization]
-  range: [event]
-  props: [role, date, date_precision]
-authored:
-  inverse: created_by
-  domain: [person, organization]
-  range: [document, artifact]
-  props: [date, date_precision]
-mentions:
-  inverse: mentioned_in
-  domain: [document]
-  range: ["*"]
-owns:
-  inverse: owned_by
-  domain: [person, organization]
-  range: [organization, asset, place, artifact]
-  props: [share, valid_from, valid_to, date_precision]
+  qualifiers: [context, strength]
+  symmetric: true
+  emittable: false
+  description: Root. Not emittable — pick a child or propose candidate:<name> with a parent.
+
+# --- part / place -------------------------------------------------------------------------------
+part_of:
+  parent: associated_with
+  inverse: contains
+  domain: [organization, place, event, document, asset]
+  range: [organization, place, event, document, asset]
+  qualifiers: [kind]           # unit|division|series|cluster|fleet|docket
+  transitive: true
+subsidiary_of:
+  parent: part_of
+  inverse: parent_of_org
+  domain: [organization]
+  range: [organization]
+  qualifiers: [share]
+spinout_from:
+  parent: part_of
+  inverse: spun_out
+  domain: [organization]
+  range: [organization]
+located_in:
+  parent: associated_with
+  inverse: contains_location
+  domain: ["*"]
+  range: [place]
+  qualifiers: [kind, tenure]   # kind: residence|registered_office|hq|branch|site|mailing|birthplace|death_place|venue|custody|flag|port|posting|sighting ; tenure: owner|tenant
+  transitive: true
+  attribute_class: sensitive   # residence-kind claims are escalated to restricted by the extractor
+
+# --- membership / work --------------------------------------------------------------------------
 member_of:
+  parent: associated_with
   inverse: has_member
   domain: [person, organization]
   range: [organization]
-  props: [role, valid_from, valid_to, date_precision]
-funded:
-  inverse: received_from
-  domain: [person, organization]
-  range: [person, organization, event]
-  props: [amount, currency, date, date_precision, kind]
-holds:
-  inverse: held_by
+  qualifiers: [role, title, seniority, unit, nominee]
+works_at:
+  parent: member_of
+  inverse: employs
   domain: [person]
-  range: [credential, position]
-  props: [valid_from, valid_to, date_precision]
+  range: [organization]
+  qualifiers: [role, title, department, employment_kind]
+board_member:
+  parent: member_of
+  inverse: has_board_member
+  domain: [person]
+  range: [organization]
+  qualifiers: [board_role]     # director|chair|observer|advisory
+studied_at:
+  parent: member_of
+  inverse: educated
+  domain: [person]
+  range: [organization]
+  qualifiers: [degree, field]
+
+# --- creation -----------------------------------------------------------------------------------
+created:
+  parent: associated_with
+  inverse: created_by
+  domain: [person, organization]
+  range: [organization, document, artifact, asset, credential, event]
+  qualifiers: [role]           # author|founder|inventor|artist|issuer|organizer
+founded:
+  parent: created
+  inverse: founded_by
+  domain: [person, organization]
+  range: [organization]
+authored:
+  parent: created
+  inverse: authored_by
+  domain: [person, organization, account]
+  range: [document, artifact]
+  qualifiers: [role]
+
+# --- ownership / control / money ----------------------------------------------------------------
+owns:
+  parent: associated_with
+  inverse: owned_by
+  domain: [person, organization]
+  range: [organization, asset, account, artifact, place]
+  qualifiers: [share, kind]    # kind: legal|beneficial|nominee|trust|lien|assignee
+controls:
+  parent: associated_with
+  inverse: controlled_by
+  domain: [person, organization]
+  range: [organization, asset, account]
+  qualifiers: [mechanism]      # management|voting|trustee|operator|custody|signatory
+manages:
+  parent: controls
+  inverse: managed_by
+  domain: [organization, person]
+  range: [organization, asset]
+paid:
+  parent: associated_with
+  inverse: received_from
+  domain: [person, organization, account]
+  range: [person, organization, account, event]
+  qualifiers: [amount, currency, kind, round, instrument]   # kind: investment|grant|donation|political_contribution|loan|contract|salary|fee|sponsorship|transfer_fee|licence|claim
+transacted_with:
+  parent: associated_with
+  inverse: transacted_with
+  domain: [person, organization]
+  range: [person, organization]
+  qualifiers: [kind, amount]
+  symmetric: true
+supplies:
+  parent: transacted_with
+  inverse: supplied_by
+  domain: [organization, person]
+  range: [organization, person]
+  qualifiers: [goods, contract_ref]
+  symmetric: false
+represents:
+  parent: associated_with
+  inverse: represented_by
+  domain: [person, organization]
+  range: [person, organization]
+  qualifiers: [capacity]       # counsel|agent|lobbyist|registered_agent|auditor|guardian|executor|trustee|gallery|adjuster
+
+# --- people -------------------------------------------------------------------------------------
+related_to:
+  parent: associated_with
+  inverse: related_to
+  domain: [person]
+  range: [person]
+  qualifiers: [relation]       # sibling|cousin|in_law|grandparent|... (parent/spouse have their own predicates)
+  symmetric: true
+  attribute_class: sensitive
+parent_of:
+  parent: related_to
+  inverse: child_of
+  domain: [person]
+  range: [person]
+  qualifiers: [kind]           # biological|step|adoptive
+  symmetric: false
+  attribute_class: sensitive
+spouse_of:
+  parent: related_to
+  inverse: spouse_of
+  domain: [person]
+  range: [person]
+  qualifiers: [kind]           # marriage|partnership
+  symmetric: true
+  attribute_class: sensitive
+knows:
+  parent: associated_with
+  inverse: knows
+  domain: [person, account]
+  range: [person, account]
+  qualifiers: [context]
+  symmetric: true
+follows:
+  parent: knows
+  inverse: followed_by
+  domain: [account, person]
+  range: [account, person]
+  symmetric: false
+
+# --- events / legal / credentials / accounts / documents ----------------------------------------
+participated_in:
+  parent: associated_with
+  inverse: had_participant
+  domain: [person, organization]
+  range: [event, transaction]
+  qualifiers: [role, outcome]
 party_to:
+  parent: participated_in
   inverse: has_party
   domain: [person, organization]
   range: [legal_matter]
-  props: [role]
-other:
-  inverse: other
-  domain: ["*"]
+  qualifiers: [role]           # plaintiff|defendant|witness|counsel|judge|court|designated
+holds:
+  parent: associated_with
+  inverse: held_by
+  domain: [person, organization]
+  range: [position, credential]
+  qualifiers: [status]
+uses_account:
+  parent: associated_with
+  inverse: account_of
+  domain: [person, organization]
+  range: [account]
+  qualifiers: [verified]
+mentions:
+  parent: associated_with
+  inverse: mentioned_in
+  domain: [document, account]
   range: ["*"]
-  description: Escape hatch. Requires a predicate_label.
-# derived-only
+  qualifiers: [kind, sentiment]   # kind: co_occurrence|citation|adverse|promotion
+depicts:
+  parent: mentions
+  inverse: depicted_in
+  domain: [document]
+  range: ["*"]
+  qualifiers: [region]
+
+# --- derived / system (never extracted) ---------------------------------------------------------
 adjacent_to:
+  parent: associated_with
   inverse: adjacent_to
   domain: [place]
   range: [place]
-  props: [distance_m]
+  qualifiers: [distance_m]
+  symmetric: true
   derived: true
 preceded_by:
+  parent: associated_with
   inverse: succeeded_by
   domain: ["*"]
   range: ["*"]
   derived: true
 same_as:
+  parent: associated_with
   inverse: same_as
   domain: ["*"]
   range: ["*"]
+  symmetric: true
   system: true
 not_same_as:
+  parent: associated_with
   inverse: not_same_as
   domain: ["*"]
   range: ["*"]
+  symmetric: true
+  system: true
+suggested_link:
+  parent: associated_with
+  inverse: suggested_link
+  domain: ["*"]
+  range: ["*"]
+  qualifiers: [method, score, basis]
   system: true

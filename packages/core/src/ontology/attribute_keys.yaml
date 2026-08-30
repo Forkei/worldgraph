@@ -1,0 +1,34 @@
+# Attribute keys v2 — facts about one thing. `temporal_kind`: timeless (never changes) · interval (true for a
+# period) · snapshot (an observation at a time). Unknown keys are accepted as candidate:<key> with a parent from
+# this list (or `description` as the default parent) and counted for promotion. Never store derived quantities
+# (age, tenure length): the extractor converts them to the underlying dated fact with a `derivation`.
+kind:            { datatype: string, temporal_kind: timeless, description: "subtype of the node (company, city, race, …)" }
+aliases:         { datatype: string, temporal_kind: timeless, description: "other names/handles/spellings, one per claim" }
+description:     { datatype: string, temporal_kind: snapshot }
+status:          { datatype: string, temporal_kind: snapshot, description: "active|dissolved|deceased|missing|suspended|revoked|open|closed" }
+date_of_birth:   { datatype: date,   temporal_kind: timeless, attribute_class: restricted }
+date_of_death:   { datatype: date,   temporal_kind: timeless }
+nationality:     { datatype: string, temporal_kind: interval, attribute_class: sensitive }
+gender:          { datatype: string, temporal_kind: timeless, attribute_class: sensitive }
+occupation:      { datatype: string, temporal_kind: snapshot }
+jurisdiction:    { datatype: string, temporal_kind: timeless }
+legal_form:      { datatype: string, temporal_kind: timeless }
+founded_on:      { datatype: date,   temporal_kind: timeless }
+dissolved_on:    { datatype: date,   temporal_kind: timeless }
+industry:        { datatype: string, temporal_kind: interval }
+ticker:          { datatype: string, temporal_kind: interval }
+employee_count:  { datatype: number, temporal_kind: snapshot }
+revenue:         { datatype: money,  temporal_kind: snapshot }
+website:         { datatype: url,    temporal_kind: interval }
+identifier:      { datatype: string, temporal_kind: timeless, description: "the account's own identifier (address, number, handle)" }
+platform:        { datatype: string, temporal_kind: timeless }
+registry_id:     { datatype: string, temporal_kind: timeless, description: "scheme:value — LEI, CIK, CRD, SIREN, IMO, NPI, parcel, licence, docket, sha256" }
+url:             { datatype: url,    temporal_kind: timeless }
+published_on:    { datatype: date,   temporal_kind: timeless }
+starts_on:       { datatype: date,   temporal_kind: timeless }
+ends_on:         { datatype: date,   temporal_kind: timeless }
+outcome:         { datatype: string, temporal_kind: timeless }
+address:         { datatype: string, temporal_kind: timeless, description: "formatted address text of a place node" }
+coordinates:     { datatype: geo,    temporal_kind: timeless }
+amount:          { datatype: money,  temporal_kind: timeless }
+follower_count:  { datatype: number, temporal_kind: snapshot }

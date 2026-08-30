@@ -40,6 +40,7 @@ async function main() {
     case "sources": return sources(sub ?? s("inv"));
     case "proposed": return proposed(sub ?? s("inv"));
     case "sql": return sql([sub, ...rest].filter(Boolean).join(" "));
+    case "ontology": return ontology(sub);
     case "models": return console.log(Object.values(MODELS).map((m) => `${m.alias.padEnd(22)} ${m.label.padEnd(26)} $${m.price[0]}/$${m.price[1]} per 1M${hasKeyFor(m) ? "" : "   (no API key)"}`).join("\n"));
     default:
       console.log(`wg — WorldGraph CLI (M0)
@@ -53,6 +54,7 @@ async function main() {
   wg source <source-id>          text with claim spans marked
   wg proposed <inv>              "other" types/predicates by frequency
   wg models
+  wg ontology [predicates|types|keys]   the registry as the extractor sees it
   wg sql "<select ...>"`);
   }
 }
@@ -122,17 +124,26 @@ async function investigate() {
     const sum = await extractSource(ctx, src);
     if (sum.chunks && sum.skipped === sum.chunks) console.log(`         (already extracted with ${model.label})`);
     await updateSourceStatus(src.id, "extracted");
-    totals.relations += sum.relations; totals.attributes += sum.attributes; totals.rejected += sum.rejected; totals.fuzzy += sum.fuzzy; totals.other += sum.other; totals.usd += sum.usd;
+    totals.relations += sum.relations; totals.attributes += sum.attributes; totals.rejected += sum.rejected; totals.fuzzy += sum.fuzzy; totals.other += sum.candidates; totals.usd += sum.usd;
     for (const [k, v] of Object.entries(sum.rejectReasons)) totals.rejectReasons[k] = (totals.rejectReasons[k] ?? 0) + v;
   }
   await setInvestigationStatus(inv.id, "done");
   await audit({ investigation_id: inv.id, actor: "cli", action: "investigate.run", detail: { model: model.id, urls: urlList.length, ...totals } });
   const kept = totals.relations + totals.attributes;
   console.log(`\n== ${short(inv.id)} · ${model.label}`);
-  console.log(`sources: ${totals.sources} (${totals.fetched} fetched, ${totals.failed} failed) · claims kept: ${kept} (${totals.relations} relations, ${totals.attributes} attributes) · rejected: ${totals.rejected} (${kept + totals.rejected ? ((100 * totals.rejected) / (kept + totals.rejected)).toFixed(1) : 0}%) · fuzzy: ${totals.fuzzy} · other: ${totals.other} · spent this run: $${totals.usd.toFixed(3)}`);
+  console.log(`sources: ${totals.sources} (${totals.fetched} fetched, ${totals.failed} failed) · claims kept: ${kept} (${totals.relations} relations, ${totals.attributes} attributes) · rejected: ${totals.rejected} (${kept + totals.rejected ? ((100 * totals.rejected) / (kept + totals.rejected)).toFixed(1) : 0}%) · fuzzy: ${totals.fuzzy} · candidates: ${totals.other} · spent this run: $${totals.usd.toFixed(3)}`);
   if (Object.keys(totals.rejectReasons).length) console.log(`reject reasons: ${Object.entries(totals.rejectReasons).map(([k, v]) => `${k}=${v}`).join(", ")}`);
   const st = await investigationStats(inv.id);
   console.log(`investigation total: ${st.relations} relations, ${st.attributes} attributes, ${st.rejected} rejected, $${Number(st.usd).toFixed(3)}`);
+}
+
+async function ontology(which?: string) {
+  const reg = registry();
+  if (!which || which === "predicates") console.log(reg.promptGuide().split("\n\nATTRIBUTE KEYS")[0]);
+  if (which === "types") for (const [k, s] of Object.entries(reg.nodeTypes)) console.log(`${k.padEnd(14)} ${s.kinds.join(", ")}`);
+  if (which === "keys") for (const [k, s] of Object.entries(reg.attributeKeys)) console.log(`${k.padEnd(16)} ${s.datatype}/${s.temporal_kind}${s.attribute_class !== "public" ? "  " + s.attribute_class : ""}`);
+  console.log(`
+registry hash ${reg.hash} · ${reg.extractablePredicates.length} extractable predicates · ${reg.nodeTypeNames.length} node types · ${reg.attributeKeyNames.length} attribute keys`);
 }
 
 async function investigations() {
@@ -147,7 +158,7 @@ async function stats(id?: string) {
   if (!inv) return fail("wg stats <inv>");
   const st = await investigationStats(inv.id);
   console.log(`${inv.title}\n  seed: ${inv.seed.name} (${inv.seed.kind})  goal: ${inv.goal_text}\n  policy: ${inv.policy}  status: ${inv.status}`);
-  console.log(`  sources: ${st.sources} (${st.sources_failed} failed) · chunks: ${st.chunks}\n  claims: ${st.relations} relations + ${st.attributes} attributes · rejected ${st.rejected} · fuzzy ${st.fuzzy} · other-predicates ${st.other_predicates}\n  spend: $${Number(st.usd).toFixed(3)}`);
+  console.log(`  sources: ${st.sources} (${st.sources_failed} failed) · chunks: ${st.chunks}\n  claims: ${st.relations} relations + ${st.attributes} attributes · rejected ${st.rejected} · fuzzy ${st.fuzzy} · candidates ${st.candidates}\n  spend: $${Number(st.usd).toFixed(3)}`);
   const byModel = await query<{ model: string; n: string; usd: string; ms: string; rel: string; attr: string; rej: string }>(
     `SELECT model, count(*) n, sum(usd) usd, avg(ms) ms, sum(n_relations) rel, sum(n_attributes) attr, sum(n_rejected) rej FROM extractions WHERE investigation_id=$1 GROUP BY model`, [inv.id]);
   for (const r of byModel) console.log(`  ${r.model}: ${r.n} chunks · ${r.rel}+${r.attr} kept · ${r.rej} rejected · ${(Number(r.ms) / 1000).toFixed(1)}s avg · $${Number(r.usd).toFixed(3)}`);
@@ -165,10 +176,10 @@ async function claims(id?: string) {
   const order = b("random") ? "random()" : "c.created_at";
   const rows = await query<Record<string, any>>(
     `SELECT * FROM (
-       SELECT 'relation' kind, c.id, c.source_id, c.subject->>'name' a, c.predicate || coalesce('('||c.predicate_label||')','') p, c.object->>'name' b2, c.properties, c.quote, c.confidence, c.span_method, c.reject_reason, c.attribute_class, s.url, c.created_at
+       SELECT 'relation' kind, c.id, c.source_id, c.subject->>'name' a, c.predicate || coalesce(' ['||c.predicate_specific||']','') p, c.object->>'name' b2, c.qualifiers properties, c.quote, c.confidence, c.span_method, c.reject_reason, c.attribute_class, s.url, c.created_at
          FROM relation_claims c JOIN sources s ON s.id=c.source_id WHERE c.investigation_id=$1 AND c.status=$2
        UNION ALL
-       SELECT 'attribute', c.id, c.source_id, c.entity->>'name', c.key, c.value, c.properties, c.quote, c.confidence, c.span_method, c.reject_reason, c.attribute_class, s.url, c.created_at
+       SELECT 'attribute', c.id, c.source_id, c.entity->>'name', c.key || coalesce(' ['||c.key_specific||']',''), c.value, '{}'::jsonb properties, c.quote, c.confidence, c.span_method, c.reject_reason, c.attribute_class, s.url, c.created_at
          FROM attribute_claims c JOIN sources s ON s.id=c.source_id WHERE c.investigation_id=$1 AND c.status=$2
      ) c ORDER BY ${order} LIMIT $3`, [inv.id, status, limit]);
   for (const r of rows) {
@@ -208,14 +219,21 @@ async function source(id?: string) {
 async function proposed(id?: string) {
   const inv = id ? await getInvestigation(id) : null;
   if (!inv) return fail("wg proposed <inv>");
-  const preds = await query<{ label: string; n: string; ex: string }>(`SELECT predicate_label label, count(*) n, min((subject->>'name') || ' → ' || (object->>'name')) ex FROM relation_claims WHERE investigation_id=$1 AND predicate='other' AND status='raw' GROUP BY 1 ORDER BY n DESC`, [inv.id]);
-  console.log("proposed predicates:");
-  for (const p of preds) console.log(`  ${String(p.n).padStart(4)}  ${p.label}   e.g. ${p.ex}`);
+  const preds = await query<{ label: string; parent: string; n: string; ex: string }>(
+    `SELECT predicate_specific label, predicate parent, count(*) n, min((subject->>'name') || ' → ' || (object->>'name')) ex
+       FROM relation_claims WHERE investigation_id=$1 AND predicate_specific IS NOT NULL AND status='raw' GROUP BY 1,2 ORDER BY n DESC`, [inv.id]);
+  console.log("proposed predicates (candidate → stored under parent):");
+  for (const p of preds) console.log(`  ${String(p.n).padStart(4)}  ${p.label}  → ${p.parent}   e.g. ${p.ex}`);
+  const keys = await query<{ label: string; parent: string; n: string; ex: string }>(
+    `SELECT key_specific label, key parent, count(*) n, min((entity->>'name') || ': ' || value) ex
+       FROM attribute_claims WHERE investigation_id=$1 AND key_specific IS NOT NULL AND status='raw' GROUP BY 1,2 ORDER BY n DESC`, [inv.id]);
+  console.log("proposed attribute keys:");
+  for (const k of keys) console.log(`  ${String(k.n).padStart(4)}  ${k.label}  → ${k.parent}   e.g. ${k.ex}`);
   const types = await query<{ label: string; n: string }>(
     `SELECT label, count(*) n FROM (
-       SELECT subject->>'type_label' label FROM relation_claims WHERE investigation_id=$1 AND subject->>'type'='other'
-       UNION ALL SELECT object->>'type_label' FROM relation_claims WHERE investigation_id=$1 AND object->>'type'='other'
-       UNION ALL SELECT entity->>'type_label' FROM attribute_claims WHERE investigation_id=$1 AND entity->>'type'='other') t WHERE label IS NOT NULL GROUP BY 1 ORDER BY n DESC`, [inv.id]);
+       SELECT subject->>'type_label' label FROM relation_claims WHERE investigation_id=$1 AND subject->>'type_label' IS NOT NULL
+       UNION ALL SELECT object->>'type_label' FROM relation_claims WHERE investigation_id=$1 AND object->>'type_label' IS NOT NULL
+       UNION ALL SELECT entity->>'type_label' FROM attribute_claims WHERE investigation_id=$1 AND entity->>'type_label' IS NOT NULL) t GROUP BY 1 ORDER BY n DESC`, [inv.id]);
   console.log("proposed node types:");
   for (const t of types) console.log(`  ${String(t.n).padStart(4)}  ${t.label}`);
 }

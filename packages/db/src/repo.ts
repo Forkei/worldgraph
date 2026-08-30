@@ -112,21 +112,19 @@ export async function insertClaimsAndExtraction(claims: (RelationClaim | Attribu
 }
 
 async function insertClaim(c: pg.PoolClient, cl: RelationClaim | AttributeClaim): Promise<void> {
-  const prov = [cl.id, cl.investigation_id, cl.source_id, cl.chunk_index, cl.chunk_hash, cl.quote, cl.span_start, cl.span_end, cl.span_method, cl.confidence, cl.verified, cl.attribute_class, cl.status, cl.reject_reason, cl.redaction_reason, JSON.stringify(cl.extractor)];
+  const prov = [cl.id, cl.investigation_id, cl.source_id, cl.chunk_index, cl.chunk_hash, cl.quote, cl.span_start, cl.span_end, cl.span_method,
+    cl.extractor_conf_raw, cl.verified, cl.attribute_class, cl.status, cl.reject_reason, cl.redaction_reason, JSON.stringify(cl.extractor),
+    cl.schema_version, cl.temporal_kind, cl.valid_from_edtf, cl.valid_to_edtf, cl.date_edtf, cl.valid_from_lo, cl.valid_from_hi, cl.valid_to_lo, cl.valid_to_hi,
+    cl.date_lo, cl.date_hi, cl.time_qualifier, cl.asserted_at, cl.inferred, cl.derivation ? JSON.stringify(cl.derivation) : null, cl.extractor_conf_raw];
+  const provCols = `id, investigation_id, source_id, chunk_index, chunk_hash, quote, span_start, span_end, span_method, confidence, verified, attribute_class, status, reject_reason, redaction_reason, extractor,
+    schema_version, temporal_kind, valid_from_edtf, valid_to_edtf, date_edtf, valid_from_lo, valid_from_hi, valid_to_lo, valid_to_hi, date_lo, date_hi, time_qualifier, asserted_at, inferred, derivation, extractor_conf_raw`;
+  const ph = (n: number) => Array.from({ length: n }, (_, i) => `$${i + 1}`).join(",");
   if (cl.kind === "relation") {
-    await c.query(
-      `INSERT INTO relation_claims (id, investigation_id, source_id, chunk_index, chunk_hash, quote, span_start, span_end, span_method, confidence, verified, attribute_class, status, reject_reason, redaction_reason, extractor,
-         subject, predicate, predicate_label, object, properties)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
-      [...prov, JSON.stringify(cl.subject), cl.predicate, cl.predicate_label, JSON.stringify(cl.object), JSON.stringify(cl.properties)],
-    );
+    const vals = [...prov, JSON.stringify(cl.subject), cl.predicate, cl.predicate_specific, JSON.stringify(cl.object), JSON.stringify(cl.qualifiers)];
+    await c.query(`INSERT INTO relation_claims (${provCols}, subject, predicate, predicate_specific, object, qualifiers) VALUES (${ph(vals.length)})`, vals);
   } else {
-    await c.query(
-      `INSERT INTO attribute_claims (id, investigation_id, source_id, chunk_index, chunk_hash, quote, span_start, span_end, span_method, confidence, verified, attribute_class, status, reject_reason, redaction_reason, extractor,
-         entity, key, value, value_norm, datatype, properties)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
-      [...prov, JSON.stringify(cl.entity), cl.key, cl.value, cl.value_norm, cl.datatype, JSON.stringify(cl.properties)],
-    );
+    const vals = [...prov, JSON.stringify(cl.entity), cl.key, cl.key_specific, cl.value, cl.value_norm, cl.datatype];
+    await c.query(`INSERT INTO attribute_claims (${provCols}, entity, key, key_specific, value, value_norm, datatype) VALUES (${ph(vals.length)})`, vals);
   }
 }
 
@@ -149,7 +147,7 @@ export async function investigationStats(investigationId: string) {
        (SELECT count(*) FROM attribute_claims WHERE investigation_id=$1 AND status='raw') AS attributes,
        (SELECT count(*) FROM relation_claims WHERE investigation_id=$1 AND status='rejected') + (SELECT count(*) FROM attribute_claims WHERE investigation_id=$1 AND status='rejected') AS rejected,
        (SELECT count(*) FROM relation_claims WHERE investigation_id=$1 AND status='raw' AND span_method='fuzzy') + (SELECT count(*) FROM attribute_claims WHERE investigation_id=$1 AND status='raw' AND span_method='fuzzy') AS fuzzy,
-       (SELECT count(*) FROM relation_claims WHERE investigation_id=$1 AND predicate='other') AS other_predicates,
+       (SELECT count(*) FROM relation_claims WHERE investigation_id=$1 AND predicate_specific IS NOT NULL AND status='raw') + (SELECT count(*) FROM attribute_claims WHERE investigation_id=$1 AND key_specific IS NOT NULL AND status='raw') AS candidates,
        (SELECT coalesce(sum(usd),0) FROM cost_ledger WHERE investigation_id=$1) AS usd,
        (SELECT count(*) FROM extractions WHERE investigation_id=$1) AS chunks`,
     [investigationId],

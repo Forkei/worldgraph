@@ -1,45 +1,49 @@
-# Node types. Open-ended: the extractor may emit `other` with a free-text label; frequent labels get
-# promoted here by hand. `identity_keys` are the hint keys the resolver treats as hard identity (M1).
+# Node types v2. Twelve types; every node carries a `kind` attribute (subtype) rather than a separate type.
+# No `other`: an unknown type is emitted as candidate:<label> with a `type_parent` from this list and stored
+# as the parent with the label kept on the mention.
 person:
   label: Person
-  identity_keys: [email, phone, handle, url, orcid, license]
+  identity_keys: [email, phone, handle, url, orcid, licence, registry_id]
 organization:
   label: Organization
-  subtypes: [company, school, university, agency, nonprofit, club, team, court]
-  identity_keys: [domain, url, edgar_cik, registry_id]
+  kinds: [company, school, university, agency, nonprofit, club, team, court, fund, brand, party]
+  identity_keys: [domain, url, registry_id]
 place:
   label: Place
-  subtypes: [address, city, region, country, venue, coordinates]
+  kinds: [address, city, region, country, venue, parcel, coordinates]
   geocodable: true
+  identity_keys: [parcel_id]
 event:
   label: Event
-  subtypes: [conference, hearing, incident, fair, election, meeting, launch]
+  kinds: [conference, hearing, incident, fair, election, meeting, race, wedding, funeral, campaign, tender, vote]
 document:
   label: Document
-  subtypes: [article, post, filing, record, transcript, page, book, paper]
-  identity_keys: [url, doi]
+  kinds: [article, post, filing, record, transcript, page, book, paper, photo, video, audio, minutes, roster, listing]
+  identity_keys: [url, doi, hash]
 account:
   label: Account
-  subtypes: [email, phone, handle, domain, username]
+  kinds: [email, phone, handle, domain, ip, wallet, username]
+  identity_keys: [identifier]
 artifact:
   label: Artifact
-  subtypes: [photo, video, paper, patent, product, software]
-position:
-  label: Position
-  description: A role reified when it has its own attributes (e.g. "Chief Scientist, 2019–2022").
+  kinds: [software, dataset, design, malware, product]
 asset:
   label: Asset
-  subtypes: [vehicle, vessel, aircraft, property]
+  kinds: [vehicle, vessel, aircraft, property, artwork, patent, trademark]
+  identity_keys: [registry_id]
+position:
+  label: Position
+  description: An office reified when it outlives its holders and succession matters ("the 43rd governor").
 credential:
   label: Credential
-  subtypes: [license, degree, certification, award]
+  kinds: [licence, degree, certification, award, visa, citizenship, clearance]
+  identity_keys: [registry_id]
 legal_matter:
   label: LegalMatter
-  subtypes: [case, filing, judgment]
+  kinds: [case, filing, judgment, sanction, probate, eviction, restraining_order]
   identity_keys: [docket]
-money_flow:
-  label: MoneyFlow
-  subtypes: [donation, contract, grant, investment, salary]
-other:
-  label: Other
-  description: Escape hatch. Requires a type_label.
+transaction:
+  label: Transaction
+  description: A money or asset flow reified only when it has > 2 parties or its own identity (tx hash, contract number, invoice).
+  kinds: [sale, contract_award, transfer, auction, donation, investment]
+  identity_keys: [registry_id]
