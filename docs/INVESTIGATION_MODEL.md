@@ -1,44 +1,43 @@
 # The Investigation Model — the contract for research, planning, and knowledge
 
-*v0.2 · 2026-08-30. The document the three "thinking" pieces of WorldGraph — **research/exploration**,
-**planning**, **information organisation** — are built against. Resolves the research round
-(`docs/research/01–13`), the walkthrough (`docs/WALKTHROUGH.md`), and the two voice memos. v0.2 applies
-the maintainer's rule: **power in simplicity** — every object that was a special case of another was removed. After
-this is agreed, changes to these pieces should be rows in tables, not rewrites. **[settled]** = from the
-research; **[param]** = tuned from runs; **ASK** = needs the maintainer.*
+*v0.3 · 2026-08-31. Rewritten after the maintainer's full review of the built system (stages 1–7, 2026-08-30/31).
+v0.2's pipeline-with-doors becomes **mission agents around a shared evidence board**. The board and its
+bookkeeping survive; the crutches die: regex text conversion, the quote gate, the source classifier, the
+evidence-prior table, source families, text-similarity origins, hand-tuned resolution weights, blind chunking.
+**[settled]** = agreed with the maintainer; **[param]** = tuned from runs; **ASK** = needs the maintainer.*
 
 ---
 
 ## 0. The whole thing in one paragraph
 
-An investigation is a **Question** with **indicators**. The graph — sources, claims, entities, links, slots,
-hypotheses, justifications — is the memory the loop reasons over. Each pass, the **gap loop** computes what is
-missing, uncertain, or contradictory and raises **Actions**; the **scheduler** orders them by expected
-information per cost; **capabilities** execute them and return claims, media, and nulls; the **evaluate loop**
-ripples every result through justifications, resolution, grades, and hypotheses; the **review loop** sweeps
-stale work; the **stop rule** closes the Question with a proof argument. The LLM reads text and media into
-claims, enumerates hypotheses and expected observations, judges the ambiguous middle, and can be consulted — it
-never decides identity, absence, source reliability, or when to stop. Nothing about a subject type, a site, or a
-tool is hardcoded: types, predicates, rules, capabilities, tiers, and weights are data.
+An investigation is a **Question** over a shared **evidence board** — the graph of sources, claims, entities,
+links, notes, slots, hypotheses, justifications. A **dispatcher** cuts the Question into **missions** — small,
+coherent pieces of the puzzle — and launches **agents** on them. An agent is a small investigator: it reads
+whole pages, navigates on its own judgment, and interacts with the board — contributing testimony, suggesting
+strings (hypotheses), challenging what looks wrong, leaving notes, proposing follow-up missions. The board's
+**bookkeeping** is deterministic and reproducible: everything derived carries its justification and re-derives
+from testimony + decisions; identity merges only on a shared identifier, a recorded judgment that read both
+files, or the owner; reliability is a walk to the publisher entity, never a table. A **proposer** (heuristic
+now, a learned graph model later) ranks what deserves attention; an **LLM verifies** what the proposer puts in
+front of it; the owner decides anything, reversibly. Nothing about a subject type, a site, or a tool is
+hardcoded: types, predicates, rules, capabilities, and expectations are data — and grow from casework.
 
 ## 0.1 Simplicity rules (apply to every piece)
-1. **One representation for uncertainty: more edges.** Person A `lives_at` X and `lives_at` Y are two links,
-   each with its own evidence. No `alternatives[]`, no "preferred value" field. A hypothesis may *refer* to a
-   set of competing links; the links themselves stay plain.
-2. **Anything pending is a slot or a hypothesis.** No separate "watch" object: every open slot and every open
-   hypothesis *is* a standing pattern, and new facts are matched against them on arrival.
-3. **Anything expected is a rule.** Expected records, shapes, derivations, lead-generators, anomaly detectors,
-   hypothesis generators — all rows in one `rule` table with a `kind`.
-4. **The research log is the Actions.** A resulted Action *is* the log entry (capability, query, scope, result,
-   cost). No second table.
-5. **Media is a source; "depicts" is a claim.** No media-specific claim type; the "quote" of a photo claim is a
-   region, of an audio claim a time range.
+1. **One representation for uncertainty: more edges.** Competing facts are several links, each with its own
+   evidence. No `alternatives[]`, no preferred-value field.
+2. **Anything pending is a slot or a hypothesis.** Open slots and open hypotheses are the standing patterns;
+   new facts are matched against them on arrival.
+3. **Anything expected is a rule — and rules are cached learning, not authored coverage.** A tiny hand-seeded
+   core of universal reflexes; everything else proposed by agents from casework and saved for reuse.
+4. **The research log is the Actions.** An agent's steps are Action rows; a resulted Action *is* the log entry.
+5. **Media is a source; "depicts" is a claim.** The "quote" of a photo claim is a region, of audio a time range.
 6. **Everything derived carries its justification and is recomputed, never edited.**
-7. **The LLM touches the graph only through the toolkit (§4.4), with bounded subgraphs.**
+7. **Agents touch the board only through the toolkit** — bounded reads, evidence-carrying writes (§4.4).
+8. **Nothing merges silently on a score.** Identity changes need an identifier, a judgment, or the owner (§5).
 
 ---
 
-## 1. Objects (twelve)
+## 1. The board (objects)
 
 ### 1.1 Investigation · Question  [settled]
 ```
@@ -49,43 +48,63 @@ Question      { investigation_id, parent_question_id?, subject_ref, sought: text
                 kill_criterion, stop_rule{min_independent_on[], mandatory_searched, stability_actions, max_open_contradictions},
                 status: open|answered|killed|exhausted }
 ```
-Compiled from free text (door 1b) against the registry, the indicator table (§1.11) and the rules. Sub-questions
-are raised by hypotheses ("where was the wedding?") and by ring expansion ("household is silent → question it").
+Compiled from free text (an agent job, user-visible and editable) against the registry, the indicator
+templates and the rules. Sub-questions are raised by hypotheses and by agents.
 
-### 1.2 Source  [settled]
+### 1.2 Source  [settled; v0.3 rewrite]
 ```
 Source { locator, capability_id, kind: html|pdf|image|audio|video|api|dataset|manual, fetched_at,
-         content_hash, blob_key (raw), snapshot_key (rendered/WARC/screenshot), text?, title, published_at,
-         lang, source_family_id, tier, status }
+         content_hash, blob_key (raw), snapshot_key (rendered HTML / WARC / screenshot — the audit copy),
+         text (canonical MARKDOWN — exactly what the reading agent saw), link_table [{n, anchor, url}],
+         title, published_at?, lang, status, retracted_at?, retracted_reason? }
 ```
-Captured **before** extraction (raw + rendered snapshot + hash), so a claim's page can always be re-shown.
-`source_family_id` groups outlets that share an upstream (all US people-search aggregators = one family; a
-PR-wire syndication = one family) — the independence rule, as data.
+- **Markdown is the canonical text.** No markdown→plain-text conversion, no separate "reader-visible" form.
+  Inline links are rewritten to footnote refs `[anchor][n]`; the numbered `link_table` is stored with the
+  source — compact for reading, complete for navigation. The rendered snapshot is kept as the audit copy only.
+- **PDFs**: transcribed to markdown by the reader model natively (layout, tables, scans); the transcription is
+  the canonical text; the PDF blob is the audit copy. Huge documents are read section-wise by the agent
+  (skeleton first, then chosen sections, with carried notes) — the agent turns pages; nothing slices blindly.
+- **`published_at` is opportunistic**: metadata when present, date-in-URL, Wayback first-capture as an upper
+  bound. Never guessed; null otherwise.
+- **No classifier, no doc-kind, no tiers, no source families.** Who publishes a page, what they are, and who a
+  fact is attributed to are **claims** the reading agent emits about the source, like any other claims
+  (`page —published_by→ FFA`; `FFA —is→ France's athletics federation`; `fact —attributed_to→ Reuters`).
+  Reliability is derived from that structure (§1.4); a config table about websites never exists again.
+- **Failure is loud and durable**: the attempt trace stays on the source; a failed fetch opens
+  `not_obtainable(reason)` so it appears in gaps; retry/escalation (other method, archive, owner-session
+  browser) is Action state, not a silent drop.
 
-**Reliability is never a property of a domain** (decision 2026-08-30: no hardcoded site lists). Each source
-is classified *from its own content* — `doc_kind` (record, filing, minutes, roster, directory, article, paper,
-transcript, profile, page, post, listing, forum), `publisher_name`, `self_published` — and a claim's
-reliability tier is computed per claim: a small **evidence prior by document kind** (a filing is not a forum
-post; ~14 rows, adjusted by observed agreement), **+1 step when the page is self-published about the entity it
-concerns** (a company's own team page is authoritative about its roster — but not independent), a **learned
-adjustment** once a source has ≥ 20 observed agreements/contradictions with independent origins, and an
-**owner override** if one was decided. `source_tiers` holds only overrides; it is empty by default.
+### 1.3 Claim  [settled; v0.3: gate removed]
+Relation claims and attribute claims (M1_DESIGN §2): typed against the registry, EDTF time as written,
+`asserted_at`, `inferred` flag, `derivation` (age → date-of-birth range, computed deterministically — the
+model never does arithmetic), qualifiers. **The quote is provenance, not a gate**: it is stored and shown
+(`why` walks to it) but no longer verified or rejected — honesty is enforced by corroboration, challenges, and
+grading, not by string matching (removed 2026-08-31; the gate was finicky and its normalizer brittle). The
+quote's span is a character range in markdown, a bounding box in an image, a time range in audio/video.
+Mentions carry the surface form and **hints** (title, employer, handles, urls seen nearby) — the raw material
+for identity keys.
 
-### 1.3 Claim  [settled; M0/M1]
-Relation claims and attribute claims as in `M1_DESIGN.md` §2 — quote-gated, EDTF time, `asserted_at`,
-`derivation`, `attribute_class`, `extractor_conf_raw` never scored. The quote's span is a character range in
-text, a **bounding box** in an image, a **time range** in audio/video. A photo that shows Jane is
-`source —depicts→ Jane {region}`; a node's profile picture is a `depicts` claim from an image source. Mentions
-may carry a local `face_ref` (an embedding kept on this machine, used only by §6.6).
+### 1.4 Entity · Link · Attribute · Note  [settled; v0.3: reliability ladder]
+Views over claims + decisions, rebuilt never edited, with **persistent entity ids** (a merged bundle keeps the
+id it was born with across rebuilds). A link aggregates the claims for one `(src, predicate, dst)`; an
+attribute is a note *on* a node (occupation, date_of_birth); free-form notes are `free` hypotheses pinned to
+anything. Qualifiers use **subsumption**: "Partner" under an existing "General Partner" is the same fact worded
+weaker — recorded as corroboration, not conflict; conflict is reserved for actual disagreement.
 
-### 1.4 Entity · Link · Attribute  [settled]
-Views over claims + decisions (M1). A link aggregates the claims for one `(src, predicate, dst)` and carries
-the **evidence profile** (independent sources = distinct families × origin clusters, primary count, verified,
-contradicting links) and the **grade** (reliability A–F from the tier table × credibility 1–6 from
-independence/corroboration/contradiction → Established · Corroborated · Single-source · Unverified · Disputed).
-Competing facts are simply **several links** with the same predicate; when they cannot all be true (a
-functional predicate: date of birth, one current registered address), each is marked *contested* by the others,
-and a hypothesis (§1.8) governs the question of which is right. Nothing is collapsed.
+**Grades are two raw facts and a name.**
+- **Reliability = the publisher ladder**, derived by walking the graph to the source's publisher entity and
+  asking its relationship to the fact: **originator of the record** (the FFA about licences) → **the subject
+  about itself** (ACORN's team page about ACORN) → **independent witness/reporter** → **secondhand aggregator**
+  → **unknown/anonymous**. The ladder is the definition of the A–E scale, not a judgment about any site.
+  Cold start is honest: an unknown publisher grades low and climbs as the graph learns who they are — and the
+  graph learns a publisher once, forever.
+- **Credibility = independent origins**, where independence is provenance, not text shape: same page = one
+  origin; same publisher entity = one origin; a fact **attributed** to X has origin X, wherever it was read
+  ("according to Reuters" re-roots to Reuters); a page citing its source for a fact is derivative. No shingles,
+  no similarity thresholds, no passage windows (removed 2026-08-31).
+- The label (Established · Corroborated · Single-source · Unverified · Disputed) is display vocabulary for a
+  combination of the two raw facts; the raw numbers are always shown beside it, and nothing downstream decides
+  off the label.
 
 ### 1.5 Slot  [settled]
 ```
@@ -93,236 +112,258 @@ Slot { entity_id | question_id, key (predicate | record_class | indicator), wind
        status: unset|found|searched_absent|unknown|not_obtainable|not_applicable,
        source_id?, action_id?, searched_at?, scope ("what nil means"), reason?, raised_by_rule }
 ```
-Absence is an object. `searched_absent` on a mandatory record is evidence. `not_obtainable` carries the reason
-(law, paywall, CAPTCHA) and the capability that would obtain it if it ever exists. Every open slot is a
-standing pattern: a new claim on `(entity, key)` closes it.
+Absence is an object; `searched_absent` on a mandatory record is evidence; `not_obtainable` carries the reason
+and what would obtain it. Every open slot is a standing pattern — and a **link to something that does not
+exist yet**: a pin waiting for a note.
 
-### 1.6 Rule  [mechanism settled; content param]
+### 1.6 Rule  [mechanism settled; content grows from casework]
 ```
-Rule { kind: shape|expected_record|derivation|lead|anomaly|hypothesis, when (pattern over graph/entity/jurisdiction),
-       then (slot to open | action to raise | hypothesis to propose | flag), confidence, source: hand|mined,
-       precision_observed, enabled }
+Rule { kind: shape|expected_record|derivation|lead|anomaly|hypothesis, when, then, confidence,
+       source: hand|agent|mined, proposed_in (investigation), precision_observed, enabled }
 ```
-Examples: shape "person has ≥1 residence per covered period"; expected_record "US-IL teacher ⇒ ISBE licence
-(mandatory, capability ISBE)"; derivation "spouse(x,y) ∧ lives_at(x,a,t) ⇒ open slot lives_at(y,a,t)" (a place
-to look, never a fact); lead "new email ⇒ actions Gravatar, Holehe, GHunt"; anomaly "person with > 5 addresses
-in 2 years"; hypothesis "`related_to{unknown}` ∧ same surname ∧ close age ⇒ propose spouse|sibling". Hand-written
-first; mined (AnyBURL) once graphs are large enough; a rule may raise Actions automatically only while its
-observed precision is above a floor **[param]**.
+A tiny hand core of universal reflexes (a person has a birth date; an employment has an end; a company has
+officers). Everything scenario-shaped — "French teenage athlete ⇒ FFA licence, club roster, race results" — is
+**proposed by agents during missions** and saved as rows, so the next case of that shape gets it for free.
+Rules are a cache of learned expectations, not a config file. Mined rules (AnyBURL) once graphs are large.
 
 ### 1.7 Justification  [settled]
 ```
 Justification { derived_id, derived_kind: link|attribute|merge|grade|hypothesis_score|slot_status,
                 supports: [{kind: claim|decision|rule|source|slot, id}], status: in|out }
 ```
-Retracting a claim, a merge, a source tier, or a rule re-derives everything resting on it. Grades are computed,
-never stored by hand. "Why?" is a walk over this table.
+Retraction re-derives everything resting on the retracted thing; "why?" is a walk over this table, ending at
+quotes, pages, and publishers. Justifications also define the **blast radius** for incremental rebuild (§2).
 
-### 1.8 Hypothesis  [settled; two kinds first]
+### 1.8 Hypothesis  [settled]
 ```
 Hypothesis { question_id, kind: identity|relation|value|event|free, exclusion_group?,
-             pattern (what would be true), refers_to: [link|entity|slot ids],
-             predicted_if_true: [{key, capability?, diagnosticity, cost}], predicted_if_false: [...],
-             evidence: [{kind: claim|link|slot(searched_absent)|source, id, polarity, diagnosticity}],
-             status: open|supported|established|disproved|abandoned, score, assumptions[] }
+             pattern, refers_to[], predicted_if_true[], predicted_if_false[],
+             evidence: [{kind, id, polarity, diagnosticity}], status, score, assumptions[], raised_by }
 ```
-Mutually exclusive hypotheses share an `exclusion_group` and attack each other; the committed set is the
-grounded extension (a fixpoint). Kinds at M1: **identity** ("mention X is entity Y") and **relation**
-("Robert is spouse | sibling | co-owner") — rule-generated. Next: **value** ("the wedding was in Lyon | Aix |
-Nice" — refers to the competing links) and **event** ("this photo is a wedding") — LLM-proposed (door 2).
-`free` later. Never "proven": *established* means the stop-rule thresholds are met.
+The strings and sticky notes on the board. Raised by rules, by the proposer, and **by agents** (with their
+evidence attached). `free` = an open note pinned to anything. Never "proven": *established* means the
+stop-rule thresholds are met. A **challenge** is a hypothesis targeting an existing link, merge, or source
+("this claim misreads its quote", "this merge is wrong — look at the vintages", "this 'registry' is a scraper"):
+raising one marks the target contested immediately; the machinery or the owner settles it.
 
 ### 1.9 Action  [settled; HOLMES state machine; is also the research log]
 ```
-Action { question_id, line_of_enquiry, kind: fetch|search|capability|read|resolve|verify|expand|manual|consult,
-         target, capability_id?, params{}, raised_by: {kind: slot|hypothesis|rule|review|human|consult, id},
-         originating_source_id?, priority, score, score_parts{},
+Action { question_id, mission_id?, line_of_enquiry, kind: fetch|search|capability|read|resolve|verify|expand|manual|consult,
+         target, capability_id?, params{}, raised_by: {kind: slot|hypothesis|rule|review|human|agent, id},
+         priority, score, score_parts{},
          state: for_allocation|allocated|running|resulted|filed|referred|pended|failed, pend_until?,
-         result: found|partial|no_trace|not_obtainable|error, scope ("what nil means"), result_refs[], cost, tier_used,
+         result: found|partial|no_trace|not_obtainable|error, scope, result_refs[], cost, tier_used,
          started_at, finished_at }
 ```
-One line of enquiry per Action; duplicate-check before raising; reopening a filed Action = a new Action citing
-it; `manual` = a task for the owner with the expected return shape; `consult` = LLM door 4. A resulted Action
-*is* the research-log row.
+Every agent step is an Action row, so the research log is complete even though the agent chose the steps.
 
-### 1.10 DecisionLog  [settled]
+### 1.10 Mission  [new in v0.3; settled]
+```
+Mission { question_id, objective (one sentence), scope { entities[], slots[], hypotheses[] },
+          frontier [urls | queries], constraints { pages, model }, state: proposed|running|done|extended,
+          verdict: found|partial|no_trace (with scope), trail (action ids), proposals (follow-up missions),
+          launched_by: dispatcher|agent|human }
+```
+A mission is a **line of enquiry made real** — a small, coherent piece of the puzzle one agent can hold.
+The agent gets: the objective · a **digest** of the relevant subgraph · the open slots/hypotheses it should
+close · a starting frontier · the toolkit. Inside the mission it navigates freely with its own context.
+It ends when the objective is met, the frontier is exhausted, or the agent asks for more room — an extension
+request goes back to the dispatcher as a proposed mission, scored against every other. Missions run in
+parallel; the sources table is the shared "already visited" ledger; scopes are declared so two agents don't
+walk the same street. Decomposition is recursive: agents propose sub-missions they shouldn't absorb.
+
+### 1.11 DecisionLog  [settled]
 ```
 Decision { seq, at, actor: system|human|llm, kind: scope|merge|split|refer|pend|policy|stop|kill|capability,
            subject_ref, rationale, inputs[] (justification refs), reversible_by? }
 ```
+Also the label stream for learning (§6): every recorded merge/split verdict is a training example.
 
-### 1.11 Capability  [mechanism settled; inventory open]
+### 1.12 Capability  [mechanism settled; inventory open]
 ```
 Capability { name, kind: connector|pivot|search|fetch|browser_recipe|tool|dataset|manual,
-             inputs: fact_type[], outputs: fact_type[] (+ predicates it can emit), cost{usd, seconds},
+             inputs: fact_type[], outputs: fact_type[], cost{usd, seconds},
              tier: L0|L1|L2|L3|L4, jurisdictions[], entity_types[], cache{key_fields[], ttl}, rate{},
-             requires{key?, session?}, yield_prior{hits, runs}, enabled, source_family_id, added_by: hand|acquired, spec }
+             requires{key?, session?}, enabled, added_by: hand|acquired, spec }
 ```
-The **capability graph**: fact types are nodes, capabilities are edges. The enabled set at any moment is
-"capabilities whose inputs exist in the graph." Sites and tools are rows.
+Fetching learns **per-domain strategy** (which method worked last — plain HTTP for most of the web, the
+headless service or the owner-session browser for walled domains) so speed is the default and escalation the
+exception. Fetches of distinct URLs run concurrently; rate limits apply per service.
 
-### 1.12 Indicator table  [param; seeded]
-`indicator_template(subject_type, name, predicates[], record_classes[], weight)` seeded from the 40-scenario
-matrix (research 09). Questions compile against it; it is a list, not an object with a lifecycle.
-
-That is the whole vocabulary: Investigation, Question, Source, Claim, Entity/Link/Attribute (views), Slot, Rule,
-Justification, Hypothesis, Action, Decision, Capability.
+### 1.13 Indicator table  [param; seeded]
+`indicator_template(subject_type, name, predicates[], record_classes[], weight)` seeded from research 09;
+grown the same way rules are — agents propose, cases confirm.
 
 ---
 
 ## 2. Loops
 
-**Ingest.** Source captured → claims (door 1; tables → one claim per row; media → `depicts` with regions) →
-quote gate, domain/range, policy hook, append → mentions to resolution; hard keys harvested → match new
-`(node, key)` against open slots and hypotheses → lead/anomaly rules → Actions → the producing Action resulted.
+**Ingest** (what happens to an agent's returns): sources + claims land → mentions to resolution →
+hard keys matched against open slots and hypotheses → qualifier subsumption → lead/anomaly rules →
+**incremental re-derive**: the justification chains name exactly what a new claim touches (one link
+re-aggregated and regraded, one entity's rules re-run, one pair re-triaged) — milliseconds per contribution,
+so many agents can work one board. The **full rebuild survives as the auditor**: board state is deterministic
+from testimony + decisions, so incremental and full must be identical; the diff is run periodically and any
+mismatch is a bug that announces itself.
 
-**Gap.** For each open Question and each entity in its graph: open slots ← shapes ⋈ expected-record rules ⋈
-indicators (on the delta) → Actions for slots with a runnable capability; Actions for hypotheses' unchecked
-predicted observations (by diagnosticity); derivation rules with missing heads → slots. **Rings** (0 = the
-subject; 1 = household, employer, officers; 2 = relatives, co-directors, agents; 3 = neighbours, associates) are
-*computed* as graph distance along those predicate families and enter the score as one feature (§3); there is
-no gate that opens or closes a ring — an Action far from the subject runs whenever it serves an indicator or a
-hypothesis, and not otherwise. Each Action logs what it serves.
+**Dispatch (gap → missions).** For each open Question: open slots ← shapes ⋈ expected-record rules ⋈
+indicators; unchecked predicted observations of hypotheses (by diagnosticity); challenges awaiting
+investigation. The dispatcher bundles them into coherent missions, checks the board first (answer-from-graph:
+a hit is `found(cached)` at zero cost), scores them (§3), and launches the top ones in parallel. **Rings**
+(graph distance along household/employer/officer/relative predicates) are one score feature, never a gate.
 
-**Evaluate.** On result: tag to the Action and to what it served; `found | partial (→ "what remains" Action) |
-no_trace (slot ← searched_absent with scope) | error`; delta pass — collective resolution (priority queue),
-`same_as` closure, temporal bounds, contested links re-marked; justification maintenance and grade recompute;
-hypotheses re-scored, transitions logged, disproved → their Actions filed; if any priority moved by > θ,
-re-rank now.
+**Evaluate.** On a mission's return: verdicts tagged to what they served (`found | partial → follow-up |
+no_trace → searched_absent with scope | error`); re-triage touched pairs; temporal bounds propagate
+(`lo > hi` = contradiction → both links contested, a value hypothesis raised); grades recompute along
+justification chains; hypotheses re-scored; agents' proposals enter the dispatcher's queue.
 
-**Review.** Every N actions / T minutes: stale allocated → re-allocate or refer; pended past date → for
-allocation; slots older than TTL on covering predicates → stale; the Question's assumptions re-checked;
-contrarian pass (door 3c) on any hypothesis about to become established.
+**Review.** Every N actions / T minutes: stale allocated → re-allocate or refer; pended past date → back in
+the queue; stale slots on covering predicates; assumptions re-checked; contrarian pass (a context-isolated
+verifier that sees only the evidence) on any hypothesis about to become established.
 
-**Stop / kill.** Kill when the kill criterion holds (seed unverifiable after mandatory records). Stop when the
-stop rule holds → proof argument (door 1p) → context-isolated check (door 3c) → dossier. Exhausted when
-the frontier is below floor with the stop rule unmet (or the optional ceiling is hit) → report what remains.
-Nothing about money or counts is ever the criterion for "done."
+**Stop / kill.** Kill when the kill criterion holds. Stop when the stop rule holds → proof argument (every
+sentence cites claim ids) → context-isolated check → dossier. Exhausted when the frontier is below floor with
+the stop rule unmet (or the optional owner ceiling is hit) → report what remains. Nothing about money or
+counts is ever the criterion for "done."
 
 ---
 
-## 3. Attention  [mechanism settled; weights param]
+## 3. Attention  [mechanism settled; weights are triage, not truth]
 ```
-score(a) = expected_gain × p_find / cost × tier_factor × ring_decay
-expected_gain = indicator weight (fills an indicator slot)
-              + diagnosticity (tests a hypothesis: how far the result separates its exclusion group)
-              + hard-key bonus (outputs include a hard key — hardest fact first)
-              + structural delta (dependents that would re-derive; bridges; low-degree-high-evidence nodes)
-              + novelty (a small exploration term, learned)
-p_find = rule expectedness × capability yield_prior × freshness ; cost = usd + time (+ human time for manual)
-tier_factor: L0/L1 = 1 · L2 = 0.9 · L3 = policy · L4 = 0
+score(mission) = expected_gain × p_find / cost × tier_factor × ring_decay
+expected_gain  = indicator weight + diagnosticity (how far the result separates an exclusion group)
+               + hard-key bonus + structural delta + novelty
+p_find         = rule expectedness × capability/domain yield × freshness ; cost = usd + time (+ human time)
+tier_factor    : L0/L1 = 1 · L2 = 0.9 · L3 = policy · L4 = 0
 ```
-**No budgets shape the search.** There are no ring caps and no per-ring allowances (v0.2 had them; removed —
-a fixed percentage per ring is a knob pretending to be judgment). What keeps the graph from sprawling is the
-score itself: an Action on a ring-3 neighbour has near-zero `expected_gain` unless some indicator or hypothesis
-of the Question is served by it — in which case it *should* run, however far out it is. `ring_decay` is one
-learned feature in the score, expressing that far-out facts usually serve the Question less, never a limit.
-The only budget that exists is an **optional hard ceiling** (`Investigation.ceiling`) the owner may set — it
-stops the loop, it never steers it; unset by default. What ends an investigation is the stop rule.
-**Weak-key ban**: Actions raised from D/E-grade or inferred facts are capped at Low unless a hypothesis names
-them. **Answer from the graph first**: every slot is checked against this graph and linked graphs before a
-capability runs; a hit is `found(cached)` at zero cost.
+The score **ranks what gets attention — it never decides truth** (that is §5's line). A bad rank costs a
+fraction of a cent; that is why sloppy weights are tolerable here and nowhere else, and why this is the
+natural first seat for the learned model (§6). **No budgets shape the search**: no ring caps, no allowances;
+an Action far from the subject runs whenever it serves an indicator or a hypothesis. The optional owner
+ceiling stops the loop, never steers it. **Weak-key ban**: Actions raised from low-grade or inferred facts are
+capped at Low unless a hypothesis names them. **Answer from the graph first**, always.
 
 ---
 
 ## 4. Graph reasoning services  [settled]
 
-**Gaps.** Shapes as expectations (never rejections) · partial closed-world per (entity, predicate) · interval
-coverage on `covering` predicates (holes = slots with a window) · expected-record rules · derivation rules with
-missing heads · structural anomalies (missing reciprocals, one-sided relations, degree outliers vs peer group,
-isolated nodes, provenance asymmetry) · salient negatives.
+**Gaps.** Shapes as expectations · partial closed-world per (entity, predicate) · interval coverage on
+`covering` predicates · expected-record rules · derivation rules with missing heads · structural anomalies ·
+salient negatives. Ranking which absence *matters* is the dispatcher's score now, the learned model's instinct
+later (link prediction = machine-generated slots; "this absence is weird for this kind of node").
 
-**Propagation.** Justifications + delete-and-rederive · collective resolution (neighbourhood similarity,
-priority queue to convergence; a merge invalidates a bounded set; a split reverses it) · temporal bounds
-(death / dissolution / marriage dates tighten adjacent intervals; `lo > hi` = contradiction) · grades recomputed
-· soft joint scoring (PSL/KGI) only where the queue oscillates [later].
+**Propagation.** Justifications + incremental re-derive (full rebuild as auditor) · collective resolution ·
+temporal bounds · grade recompute · soft joint scoring only where the queue oscillates [later].
 
 **Standing patterns.** Open slots and open hypotheses, matched by index on insert.
 
-**The toolkit** — the only way the loop's LLM calls and the analyst touch the graph; every call returns a
-bounded subgraph with grades:
+### 4.4 The toolkit — the agents' hands  [settled]
+The only way anything LLM touches the board. **Reads** return bounded, graded subgraphs:
 ```
-ego(entity, hops, predicates?, as_of?, min_grade?)        paths(a, b, max_len, predicates?, window?)
-intersect(sub_a, sub_b, on: place|event|org|person)         fold(meta_path)   e.g. person–event–person
-timeline(entity|subgraph)                                   at(entity, t)
-contested(entity, predicate)  → the competing links          gaps(entity)      → open/stale slots, holes
-why(edge|entity|action)       → justification chain          similar(entity, k)
+ego(entity, hops, predicates?, as_of?, min_grade?)     paths(a, b, max_len, predicates?, window?)
+intersect(sub_a, sub_b, on)                            fold(meta_path)
+timeline(entity|subgraph)                              at(entity, t)
+contested(entity, predicate?)                          gaps(entity)
+why(edge|entity|action)                                similar(entity, k)
+find(name | key | text) → candidate nodes              digest(scope) → the compact text form a mission gets
 ```
-New operators are added here as needed; nothing else reaches the graph.
+**Writes** are evidence-carrying and land in the conjecture layer or as testimony — never directly in derived
+state:
+```
+contribute(source, claims[])        suggest(hypothesis, evidence[])      challenge(target, reason, evidence[])
+annotate(target, note)              propose_mission(objective, scope)    propose_rule(when, then)
+```
+What no agent can do directly: assert "same entity" as fact, delete or overwrite evidence, set a grade.
+Their certainty enters as strongly-weighted evidence; the board stays derivable from evidence + decisions.
 
 ---
 
-## 5. Contradictions  [settled]
-Two links that cannot both be true, or `lo > hi` after bounds propagation: both links are marked *contested*
-(Disputed grade), a `value` hypothesis is raised with the exclusion group = the competing links and their
-existing evidence, an Action is raised for the most diagnostic missing observation, and a Decision row is
-written. Nothing is deleted; the dossier shows every side.
+## 5. Identity  [settled; v0.3 rewrite — replaces score-band resolution]
+
+**Things merge only when something real says they're the same:**
+1. a **shared unique identifier** — an identifier that is one-per-entity *by design* (a licence number within
+   its federation, a company registry number). Multi-valued keys (emails, handles) **match** as strong
+   evidence but never *contradict* — a person has many;
+2. a **recorded judgment that read both files** — the verifier (a different model family from the reader) or
+   an agent, with both sides' dossiers, verdict + reason stored; "different" only on hard contradictions
+   (identifiers, birth years, being in two places at once — never role, seniority, or style);
+3. **the owner** — decisions beat everything, reversibly (`entity_members` is the un-merge path).
+
+**Nothing merges silently on a score.** Everything else stays a visible open hypothesis — the honest state.
+
+Around that line: every (page × person-name) starts as its own record — same-name persons must earn merging;
+**orgs and places get the same caution** (structure and jurisdiction as context; two "Mercury Capital"s stay
+apart until evidence). **The proposer** finds and ranks candidate pairs worth judging — name/key overlap,
+phonetic and character-level blocking (nickname variants mostly arrive via agents' own search expansions),
+temporal contradictions as negative evidence (different birth years, dead-before-active, two places at once).
+The proposer is a transparent heuristic today and the learned graph model tomorrow (§6); its job is triage
+order, so its errors cost cents, not identities. Structural org relations (fund series → siblings, unit →
+part_of, manager LP → manages) are derived links, never merges. Contradictions after a merge (`lo > hi`)
+raise challenges automatically.
 
 ---
 
-## 6. Capabilities
+## 6. Learning  [new in v0.3; settled direction]
 
-**Contract.** A capability receives `{inputs, question context}` and returns `{claims[], sources[],
-nulls[] (with scope), links_found[], cost, tier_used}`. It never writes to the graph; `knowledge` does.
-
-**Cache.** One `source_cache` keyed by `(capability, normalized inputs)` with the capability's TTL. A bulk
-dataset (INSEE deaths, DVF, Sirene, ISBE salary file, OpenSanctions) is a `dataset` capability whose first run
-is one big fetch and whose TTL is long. Re-runs never refetch fresh sources. No source is special-cased.
-
-**Search.** SerpAPI for Google/Scholar/Lens, Exa for semantic discovery, DuckDuckGo/Brave for unstored
-gap-filling (approved (c)). Results are Sources like any page.
-
-**The browser.** One authenticated-browser capability (Playwright with the owner's own sessions — approved (e),
-tier L3) with primitives `open · list · expand · screenshot · download`, and **site recipes as data**
-(`instagram.likes_of_post`, `instagram.story`, `x.replies`, `facebook.event_going`, …). A new site = a new
-recipe row, hand-written or LLM-proposed, tested on one example, then enabled.
-
-**Acquisition.** Propose (door 2c: from a page, an API doc, or a failed slot) → test on one known example →
-record tier/cost/yield → **enable by human click** (b) → yield learned on every run → demoted when it stops
-yielding, never deleted → workspace-wide. Later: auto-enable for low tiers once the test harness is trusted.
-
-**Media & faces** (a). *Reference matching inside our own material* — faces or objects in a photo against
-`depicts` media already on nodes in this or linked graphs, local, producing an **identity hypothesis** with a
-score, one non-face corroboration before any merge; embeddings never leave the machine. Allowed (L3).
-*External face-search services* — **not now; later**, as its own capability tier with its own policy gate, when
-we decide to do "massive facial recognition." Reverse *image* search for object/scene reuse is L0 today.
-
-**Manual.** A `manual` capability raises a task with the expected return; the Action pends; the loop continues.
+The system trains on its own casework; nothing waits for a labelling project.
+- **Labels accrue as a side effect**: owner decisions, verifier verdicts with reasons, reviewed gold files,
+  hard-key-confirmed pairs. The decisions log is the label stream.
+- **First model: learned pair-triage** — replace the hand heuristic's ranking with a model fit on accumulated
+  verdicts (features already exist as `score_parts`). Truth stays with §5; the model only proposes.
+- **Second: graph embeddings / GNN** — "these two subgraphs are the same person, 0.93" from structure;
+  link prediction as machine-generated slots; anomaly attention. Proposals → LLM verification → decisions →
+  better model: the flywheel. LLMs read and argue; the graph model holds the graph; bookkeeping stays
+  deterministic between them.
+- Hand-set numbers anywhere in the system are **bootstrap with a removal date**, named as such.
 
 ---
 
-## 7. LLM doors  [settled]
-| Door | Call | Guardrail |
-|---|---|---|
-| 1 read | text / PDF / media → claims (quote or region, time as written, `inferred` flag) | quote gate; domain/range; no claim without a source |
-| 1b compile | goal → Question + indicators, from registry + indicator table + rules | user-visible, editable |
-| 1p prose | subgraph → proof argument / dossier; every sentence cites claim ids | checked by 3c |
-| 2 hypothesize | node/subgraph → competing hypotheses with *if-true and if-false* observations; 2c capability/recipe proposals | scored by the graph, not the model |
-| 3 judge | ambiguous ER pair with both dossiers; 3c context-isolated verifier (sees evidence only) | middle band only |
-| 4 consult | "top-k next Actions and why — add or veto?"; "explain this anomaly" | candidates enter the queue scored; a veto lowers, never deletes; rate-limited |
-The LLM never asserts identity, decides absence, grades a source, scores its own hypotheses, or decides to stop.
+## 7. Capabilities
+
+**Contract.** A capability receives `{inputs, question context}` and returns `{claims[], sources[], nulls[]
+(with scope), links_found[], cost, tier_used}`. It never writes to the board; ingest does.
+
+**Cache.** One `source_cache` keyed by `(capability, normalized inputs)` with TTLs; bulk datasets are
+`dataset` capabilities with long TTLs. Re-runs never refetch fresh sources.
+
+**Search.** SerpAPI (Google/Scholar/Lens), Exa (semantic), DuckDuckGo/Brave for unstored gap-filling.
+Results are Sources like any page. Agents expand name variants themselves when searching.
+
+**The browser.** Playwright with the owner's own sessions (L3), primitives `open · list · expand · screenshot
+· download`, site recipes as data rows — hand-written or agent-proposed, tested on one example, then enabled.
+
+**Acquisition.** Propose (from a page, an API doc, or a failed slot) → test on one known example → record
+tier/cost → **enable by human click** → demoted when it stops yielding, never deleted → workspace-wide.
+
+**Media & faces.** Reference matching inside our own material (local, embeddings never leave the machine,
+identity hypothesis + one non-face corroboration before any merge) — allowed (L3). External face-search —
+later, not never, behind its own policy gate. Reverse image search for object/scene reuse is L0.
+
+**Manual.** A task for the owner with the expected return shape; the Action pends; the loop continues.
 
 ---
 
 ## 8. Reuse  [settled]
-Before any Action: check this graph and linked graphs. A photo seed first tries reference matching against
-`depicts` media in linked graphs. Linked graphs never merge; their facts arrive as claims whose source is the
-other investigation (tier = that graph's grade).
+Before any mission: check this graph and linked graphs. Linked graphs never merge; their facts arrive as
+claims whose source is the other investigation.
 
 ---
 
-## 9. Decisions on the open items
-| Item | Decision |
+## 9. Decisions log (running)
+| When | Decision |
 |---|---|
-| connector contract · cache · capture · independence · PDF/tables · SERP · Question/indicators · rule authoring · scheduler · contradictions · sub-questions · door-4 guardrails · slots/justifications · grade formula · same_as as claims · subgraph API · research log · reified nodes · snapshots | §1, §2, §3, §4.4, §5, §6 — all resolved above; reified-node rules adopted from research 06; snapshot/diff unchanged, sitting on justifications |
-| (a) faces | reference matching allowed; external **later, not never** |
-| (b) acquired capabilities | human enables, for now |
-| (c) SerpAPI + Exa | approved |
-| (d) ring budgets | **removed** — no caps, no per-ring allowances; ring is a score feature; only an optional owner-set ceiling exists, and it stops, never steers (§3) |
-| (e) browser with own sessions | yes, default |
-
-Still to discuss (the maintainer: "this will need some work"): walk each section against the simplicity rules once
-more together; anything that still reads as a special case gets folded.
+| 2026-08-29/30 | v0.2 set: own graph · no reuse · private individuals in scope · grey ok, black not · no budgets steer · competing facts = multiple links · graphs link, never merge · two-axis grade, never a probability · faces later-not-never · SerpAPI+Exa approved · browser with own sessions · acquired capabilities enabled by human click |
+| 2026-08-30 | no hardcoded domain lists (reliability from content, then v0.3: from publisher structure) |
+| 2026-08-30 | LLM judge verdicts are evidence, never decisions (stereotype-merge lesson) |
+| 2026-08-31 | **architecture: graph-driven dispatch + mission agents on one shared board** (the maintainer) |
+| 2026-08-31 | markdown is canonical text; conversion layer and quote gate removed (quotes stay as provenance) |
+| 2026-08-31 | classifier removed; publisher-as-entity + relationship ladder; families and shingles removed; attribution re-roots origins |
+| 2026-08-31 | qualifier subsumption (weaker wording = corroboration, not conflict) |
+| 2026-08-31 | identity: merge only on identifier / judgment / owner; scores are triage only; temporal contradictions as negative evidence; orgs get person-level caution; persistent entity ids |
+| 2026-08-31 | rules and indicators grow from agent proposals (cache of learned expectations) |
+| 2026-08-31 | incremental rebuild with full rebuild as auditor |
+| 2026-08-31 | learning path: casework labels → learned triage → GNN; hand numbers are bootstrap with a removal date; `extractor_conf_raw` dropped; source-agreement learning parked for later |
+| 2026-08-31 | agents read whole pages (agent-chosen section reading for monsters); registry-compiled claim schema **stays** (the one guardrail) — extraction questions parked in QUESTIONS.md |
 
 ---
 
@@ -330,16 +371,15 @@ more together; anything that still reads as a special case gets folded.
 | Package | Owns | A change looks like |
 |---|---|---|
 | `core` | registry, claim model, policy hook, ids, config | a YAML row |
-| `knowledge` | sources, claims, entities/links/attributes, slots, rules, justifications, grades, same_as, hypotheses (storage), snapshots, the toolkit | a rule row; one grade function |
-| `plan` | questions, actions, scheduler, review, stop/kill, decisions | an indicator row; a weight; a hypothesis kind |
+| `knowledge` | sources, claims, board views, slots, rules, justifications, grades, identity, hypotheses, toolkit (read+write), incremental derive | a rule row; one grade function |
+| `plan` | questions, missions, dispatcher, actions, review, stop/kill, decisions | an indicator row; a weight |
 | `acquire` | capability registry, cache, fetch/search/connectors, browser + recipes, datasets, manual tasks | a capability row; a recipe |
-| `llm` | the doors as interfaces; prompt versions; model routing | a prompt or model swap |
-Connectors never write to the graph; the LLM never touches it except through the toolkit; nothing derived is
-edited by hand.
+| `agents` | the mission agent (read, navigate, board verbs), the verifier, prompt versions, model routing | a prompt or model swap |
+Capabilities never write to the board; agents touch it only through the toolkit; nothing derived is edited by
+hand.
 
 ## 11. Effect on the plan
-M0 stands. M1 = the reasoning substrate (claims v2, registry v2, sources with capture and families, slots,
-rules, justifications, grades as views, same_as as claims + identity hypotheses, decisions, the toolkit, the
-resolver as one Action type). M2 = the loop (Question, Actions, scheduler, review, stop) + capability registry +
-the first ~15 capabilities. M3 = photos/faces (reference matching) + browser recipes + acquisition.
-`BUILD_PLAN.md` is rewritten once this is agreed.
+M0–M1 stand as built; the review's removals and replacements (markdown canonical, gate/classifier/families/
+shingles out, publisher ladder, identity §5, persistent ids, incremental derive) are the first work items of
+M2, since the loop builds on them. M2 = missions + dispatcher + agents + first capabilities (`M2_DESIGN.md`
+v0.2). M3 = media + browser recipes + acquisition. Learning (§6) runs alongside from M2 on.
