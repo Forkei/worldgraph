@@ -20,8 +20,8 @@ const TimeShape = {
 };
 const OutputSchema = z.object({
   mentions: z.array(z.object({ ref: z.string(), surface: z.string(), name: z.string(), type: z.string(), type_label: z.string().default(""), type_parent: z.string().default(""), kind: z.string().default(""), hints: KV })).default([]),
-  relations: z.array(z.object({ subject: z.string(), predicate: z.string(), candidate_label: z.string().default(""), candidate_parent: z.string().default(""), object: z.string(), qualifiers: KV, quote: z.string(), confidence: z.number().min(0).max(1).catch(0.5), attribute_class: AttrClass, ...TimeShape })).default([]),
-  attributes: z.array(z.object({ entity: z.string(), key: z.string(), key_parent: z.string().default(""), value: z.string(), datatype: z.enum(DATATYPES).catch("string"), quote: z.string(), confidence: z.number().min(0).max(1).catch(0.5), attribute_class: AttrClass, ...TimeShape })).default([]),
+  relations: z.array(z.object({ subject: z.string(), predicate: z.string(), candidate_label: z.string().default(""), attributed_to: z.string().default(""), candidate_parent: z.string().default(""), object: z.string(), qualifiers: KV, quote: z.string(), confidence: z.number().min(0).max(1).catch(0.5), attribute_class: AttrClass, ...TimeShape })).default([]),
+  attributes: z.array(z.object({ entity: z.string(), key: z.string(), key_parent: z.string().default(""), value: z.string(), datatype: z.enum(DATATYPES).catch("string"), quote: z.string(), attributed_to: z.string().default(""), confidence: z.number().min(0).max(1).catch(0.5), attribute_class: AttrClass, ...TimeShape })).default([]),
   page: z.object({ published_at: z.string().default(""), summary: z.string().default(""), publisher_name: z.string().default(""), publisher_kind: z.string().default("") }).default({ published_at: "", summary: "", publisher_name: "", publisher_kind: "" }),
 });
 
@@ -128,7 +128,7 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
 
   // The quote is stored as provenance; it is no longer located or gated (model v0.3 §1.3). A ±150-char
   // passage is kept when the quote is found verbatim in the chunk, purely for display — never to reject.
-  const provenance = (quote: string, conf: number, attrClass: AttributeClass, t: TimeOut, kindDefault?: Time["temporal_kind"]) => {
+  const provenance = (quote: string, conf: number, attrClass: AttributeClass, t: TimeOut, attributedTo: string, kindDefault?: Time["temporal_kind"]) => {
     const at = quote ? chunk.text.indexOf(quote) : -1;
     const passage = at >= 0 ? chunk.text.slice(Math.max(0, at - 150), Math.min(chunk.text.length, at + quote.length + 150)).replace(/\s+/g, " ").trim() : null;
     return {
@@ -137,7 +137,7 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
         quote, passage, span_start: at >= 0 ? chunk.start + at : null, span_end: at >= 0 ? chunk.start + at + quote.length : null, span_method: (at >= 0 ? "exact" : null) as "exact" | "fuzzy" | null,
         extractor_conf_raw: conf, verified: null, attribute_class: attrClass,
         status: "raw" as RelationClaim["status"], reject_reason: null, redaction_reason: null,
-        inferred: !!t.inferred, derivation: t.derivation ? { rule: t.derivation } : null, schema_version: ctx.registry.hash, extractor,
+        inferred: !!t.inferred, attributed_to: attributedTo || null, derivation: t.derivation ? { rule: t.derivation } : null, schema_version: ctx.registry.hash, extractor,
         ...timeOf(t, assertedAt, kindDefault),
       }, loc: at >= 0 ? { method: "exact" } : null,
     };
@@ -147,7 +147,7 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
     const subject = mention(r.subject, r.quote), object = mention(r.object, r.quote);
     const rp = ctx.registry.resolvePredicate(r.predicate === "candidate" ? (r.candidate_label || "candidate") : r.predicate, r.candidate_label, r.candidate_parent);
     const attrClass = maxClass(r.attribute_class, ctx.registry.attributeClassFloor(rp.predicate));
-    const { prov, loc } = provenance(r.quote, r.confidence, attrClass, r, "interval");
+    const { prov, loc } = provenance(r.quote, r.confidence, attrClass, r, r.attributed_to, "interval");
     const claim: RelationClaim = { id: uuidv7(), kind: "relation", ...prov,
       subject: subject ?? { surface: r.subject, name: r.subject, type: "artifact", type_label: null, kind: null, hints: {}, surface_in_quote: false },
       predicate: rp.predicate, predicate_specific: rp.specific,
@@ -175,7 +175,7 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
     }
     const spec = ctx.registry.attributeKeys[key]!;
     const attrClass = maxClass(a.attribute_class, spec.attribute_class);
-    const { prov, loc } = provenance(a.quote, a.confidence, attrClass, { ...t, derivation }, spec.temporal_kind);
+    const { prov, loc } = provenance(a.quote, a.confidence, attrClass, { ...t, derivation }, a.attributed_to, spec.temporal_kind);
     if (prov.temporal_kind === "timeless" && spec.temporal_kind !== "timeless") prov.temporal_kind = spec.temporal_kind;
     const claim: AttributeClaim = { id: uuidv7(), kind: "attribute", ...prov,
       entity: entity ?? { surface: a.entity, name: a.entity, type: "artifact", type_label: null, kind: null, hints: {}, surface_in_quote: false },

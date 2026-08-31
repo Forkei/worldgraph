@@ -11,7 +11,7 @@ import { tierForClaim, type SourceFacts } from "./reliability.ts";
 import { resolve as resolveEntities, pairKey, type Provisional, type Decision, type PairEvidence } from "./resolve.ts";
 
 interface ClaimRow {
-  id: string; kind: "relation" | "attribute"; source_id: string; tier: string | null; origin: string | null; span_method: string | null;
+  id: string; kind: "relation" | "attribute"; source_id: string; tier: string | null; attributed_to: string | null; span_method: string | null;
   subject: Mention | null; object: Mention | null; entity: Mention | null;
   predicate: string | null; predicate_specific: string | null; qualifiers: Record<string, string> | null;
   key: string | null; key_specific: string | null; value: string | null; value_norm: string | null; datatype: string | null;
@@ -59,12 +59,12 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     srcFacts.set(srow.id, { publisher_kind: srow.publisher_kind, publisher_entity_id: null, override_tier: ov, domain: srow.domain, publisher_name: srow.publisher_name });
   }
   const rows = await query<ClaimRow>(
-    `SELECT c.id, 'relation' AS kind, c.source_id, s.tier, c.origin_cluster_id AS origin, c.span_method, c.subject, c.object, NULL::jsonb AS entity,
+    `SELECT c.id, 'relation' AS kind, c.source_id, s.tier, c.attributed_to, c.span_method, c.subject, c.object, NULL::jsonb AS entity,
             c.predicate, c.predicate_specific, c.qualifiers, NULL AS key, NULL AS key_specific, NULL AS value, NULL AS value_norm, NULL AS datatype,
             c.temporal_kind, c.valid_from_lo, c.valid_from_hi, c.valid_to_lo, c.valid_to_hi, c.date_lo, c.date_hi, c.asserted_at
        FROM relation_claims c JOIN sources s ON s.id=c.source_id WHERE c.investigation_id=$1 AND c.status='raw'
      UNION ALL
-     SELECT c.id, 'attribute', c.source_id, s.tier, c.origin_cluster_id, c.span_method, NULL, NULL, c.entity,
+     SELECT c.id, 'attribute', c.source_id, s.tier, c.attributed_to, c.span_method, NULL, NULL, c.entity,
             NULL, NULL, NULL, c.key, c.key_specific, c.value, c.value_norm, c.datatype,
             c.temporal_kind, c.valid_from_lo, c.valid_from_hi, c.valid_to_lo, c.valid_to_hi, c.date_lo, c.date_hi, c.asserted_at
        FROM attribute_claims c JOIN sources s ON s.id=c.source_id WHERE c.investigation_id=$1 AND c.status='raw'`,
@@ -162,7 +162,9 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   // independence is provenance, not text shape (model v0.4 §1.4): claims of one fact from the same publisher
   // entity are ONE origin; different publishers are independent origins. Falls back to the source when the
   // publisher is not yet resolved to an entity.
-  const originKey = (r: ClaimRow): string => srcFacts.get(r.source_id)?.publisher_entity_id ?? r.source_id;
+  // a fact attributed to a named origin ("according to Reuters") counts under that origin, so many pages
+  // citing the same source are ONE origin; otherwise the publisher entity; otherwise the page itself.
+  const originKey = (r: ClaimRow): string => (r.attributed_to && r.attributed_to.trim() ? "attr:" + r.attributed_to.trim().toLowerCase() : null) ?? srcFacts.get(r.source_id)?.publisher_entity_id ?? r.source_id;
 
   // 2. links and attributes with evidence profiles
   interface Agg { ids: string[]; origins: Map<string, string>; tiers: string[]; fuzzy: number; rows: ClaimRow[] }

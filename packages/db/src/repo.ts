@@ -121,9 +121,9 @@ async function insertClaim(c: pg.PoolClient, cl: RelationClaim | AttributeClaim)
   const prov = [cl.id, cl.investigation_id, cl.source_id, cl.chunk_index, cl.chunk_hash, cl.quote, cl.span_start, cl.span_end, cl.span_method,
     cl.extractor_conf_raw, cl.verified, cl.attribute_class, cl.status, cl.reject_reason, cl.redaction_reason, JSON.stringify(cl.extractor),
     cl.schema_version, cl.temporal_kind, cl.valid_from_edtf, cl.valid_to_edtf, cl.date_edtf, cl.valid_from_lo, cl.valid_from_hi, cl.valid_to_lo, cl.valid_to_hi,
-    cl.date_lo, cl.date_hi, cl.time_qualifier, cl.asserted_at, cl.inferred, cl.derivation ? JSON.stringify(cl.derivation) : null, cl.extractor_conf_raw, cl.passage];
+    cl.date_lo, cl.date_hi, cl.time_qualifier, cl.asserted_at, cl.inferred, cl.derivation ? JSON.stringify(cl.derivation) : null, cl.extractor_conf_raw, cl.passage, cl.attributed_to ?? null];
   const provCols = `id, investigation_id, source_id, chunk_index, chunk_hash, quote, span_start, span_end, span_method, confidence, verified, attribute_class, status, reject_reason, redaction_reason, extractor,
-    schema_version, temporal_kind, valid_from_edtf, valid_to_edtf, date_edtf, valid_from_lo, valid_from_hi, valid_to_lo, valid_to_hi, date_lo, date_hi, time_qualifier, asserted_at, inferred, derivation, extractor_conf_raw, passage`;
+    schema_version, temporal_kind, valid_from_edtf, valid_to_edtf, date_edtf, valid_from_lo, valid_from_hi, valid_to_lo, valid_to_hi, date_lo, date_hi, time_qualifier, asserted_at, inferred, derivation, extractor_conf_raw, passage, attributed_to`;
   const ph = (n: number) => Array.from({ length: n }, (_, i) => `$${i + 1}`).join(",");
   if (cl.kind === "relation") {
     const vals = [...prov, JSON.stringify(cl.subject), cl.predicate, cl.predicate_specific, JSON.stringify(cl.object), JSON.stringify(cl.qualifiers)];

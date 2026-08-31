@@ -50,6 +50,8 @@ export interface Provenance extends Time {
   reject_reason: string | null;
   redaction_reason: string | null;
   inferred: boolean;
+  /** origin the page attributes this fact to ("according to Reuters"); empty if the page is the origin */
+  attributed_to: string | null;
   derivation: Record<string, string> | null;
   schema_version: string;
   extractor: { model: string; prompt_version: string; effort?: string | null; cost_usd: number };
@@ -85,8 +87,8 @@ export type Claim = RelationClaim | AttributeClaim;
 export interface TimeOut { temporal_kind: TemporalKind; valid_from: string; valid_to: string; date: string; time_qualifier: TimeQualifier; inferred: boolean; derivation: string }
 export interface ExtractionOutput {
   mentions: { ref: string; surface: string; name: string; type: string; type_label: string; type_parent: string; kind: string; hints: { key: string; value: string }[] }[];
-  relations: ({ subject: string; predicate: string; candidate_label: string; candidate_parent: string; object: string; qualifiers: { key: string; value: string }[]; quote: string; confidence: number; attribute_class: AttributeClass } & TimeOut)[];
-  attributes: ({ entity: string; key: string; key_parent: string; value: string; datatype: Datatype; quote: string; confidence: number; attribute_class: AttributeClass } & TimeOut)[];
+  relations: ({ subject: string; predicate: string; candidate_label: string; candidate_parent: string; object: string; qualifiers: { key: string; value: string }[]; quote: string; attributed_to: string; confidence: number; attribute_class: AttributeClass } & TimeOut)[];
+  attributes: ({ entity: string; key: string; key_parent: string; value: string; datatype: Datatype; quote: string; attributed_to: string; confidence: number; attribute_class: AttributeClass } & TimeOut)[];
   page: { published_at: string; summary: string; publisher_name: string; publisher_kind: string };
 }
 

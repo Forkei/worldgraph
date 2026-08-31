@@ -189,14 +189,14 @@ export class Registry {
           candidate_label: { type: "string", description: "when predicate=candidate: snake_case verb, else empty" },
           candidate_parent: { type: "string", enum: this.extractablePredicates, description: "when predicate=candidate: the closest existing predicate" },
           object: { type: "string" }, qualifiers: { type: "array", items: kv },
-          quote: { type: "string", description: "verbatim text supporting this, max 300 chars" }, confidence: { type: "number" }, attribute_class: attrClass, ...time,
-        }, required: ["subject", "predicate", "candidate_label", "candidate_parent", "object", "qualifiers", "quote", "confidence", "attribute_class", ...timeReq], additionalProperties: false } },
+          quote: { type: "string", description: "verbatim text supporting this, max 300 chars" }, attributed_to: { type: "string", description: "if the page attributes this to another source (\"according to X\", \"per the filing\"), name that source; empty if the page states it directly" }, confidence: { type: "number" }, attribute_class: attrClass, ...time,
+        }, required: ["subject", "predicate", "candidate_label", "candidate_parent", "object", "qualifiers", "quote", "attributed_to", "confidence", "attribute_class", ...timeReq], additionalProperties: false } },
         attributes: { type: "array", items: { type: "object", properties: {
           entity: { type: "string" }, key: { type: "string", description: `one of ${this.attributeKeyNames.join(", ")} or a new snake_case key` },
           key_parent: { type: "string", enum: this.attributeKeyNames, description: "for a new key: the closest existing key" },
           value: { type: "string" }, datatype: { type: "string", enum: [...DATATYPES] },
-          quote: { type: "string" }, confidence: { type: "number" }, attribute_class: attrClass, ...time,
-        }, required: ["entity", "key", "key_parent", "value", "datatype", "quote", "confidence", "attribute_class", ...timeReq], additionalProperties: false } },
+          quote: { type: "string" }, attributed_to: { type: "string", description: "if the page attributes this to another source, name it; empty otherwise" }, confidence: { type: "number" }, attribute_class: attrClass, ...time,
+        }, required: ["entity", "key", "key_parent", "value", "datatype", "quote", "attributed_to", "confidence", "attribute_class", ...timeReq], additionalProperties: false } },
         page: { type: "object", properties: {
           published_at: { type: "string", description: "EDTF if the page states a date, else empty" },
           summary: { type: "string" },
