@@ -1,0 +1,13 @@
+{
+  "name": "@worldgraph/plan",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@worldgraph/core": "workspace:*",
+    "@worldgraph/db": "workspace:*",
+    "@worldgraph/knowledge": "workspace:*",
+    "@worldgraph/extract": "workspace:*"
+  }
+}

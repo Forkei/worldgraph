@@ -38,6 +38,9 @@ importers:
       '@worldgraph/knowledge':
         specifier: workspace:*
         version: link:../../packages/knowledge
+      '@worldgraph/plan':
+        specifier: workspace:*
+        version: link:../../packages/plan
 
   packages/acquire:
     dependencies:
@@ -105,6 +108,21 @@ importers:
       yaml:
         specifier: ^2.8.1
         version: 2.9.0
+
+  packages/plan:
+    dependencies:
+      '@worldgraph/core':
+        specifier: workspace:*
+        version: link:../core
+      '@worldgraph/db':
+        specifier: workspace:*
+        version: link:../db
+      '@worldgraph/extract':
+        specifier: workspace:*
+        version: link:../extract
+      '@worldgraph/knowledge':
+        specifier: workspace:*
+        version: link:../knowledge
 
 packages:
 

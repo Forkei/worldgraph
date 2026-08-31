@@ -10,6 +10,7 @@ import {
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, type Side } from "@worldgraph/extract";
+import { compileQuestion, saveQuestion, indicatorTemplates } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -37,6 +38,7 @@ async function main() {
     case "db": return sub === "migrate" ? void (await migrate()) : fail("usage: wg db migrate");
     case "investigate": return investigate();
     case "search": return search(sub ?? s("inv"), ...rest);
+    case "question": return question(sub ?? s("inv"), ...rest);
     case "capabilities": case "caps": return capabilitiesCmd();
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
@@ -79,6 +81,7 @@ async function main() {
   wg investigations
   wg search <inv> "<query>" [--engine serpapi|exa] [--num 10] [--fetch N]   find URLs; --fetch ingests top N
   wg capabilities                the capability registry (on/off by required keys)
+  wg question <inv> "<goal>"     compile a goal into a Question (indicators + stop rule)
   wg stats <inv>
   wg claims <inv> [--limit 30] [--random] [--rejected]
   wg sources <inv>
@@ -249,6 +252,37 @@ async function search(id?: string, ...queryParts: string[]) {
     }
     await rebuildCmd(inv.id);
   }
+}
+
+async function question(id?: string, ...goalParts: string[]) {
+  const inv = id ? await getInvestigation(id) : null;
+  const clean: string[] = [];
+  for (let i = 0; i < goalParts.length; i++) { if (goalParts[i]!.startsWith("-")) { i++; continue; } clean.push(goalParts[i]!); }
+  const goal = (s("q") || clean.filter(Boolean).join(" ")).trim() || inv?.goal_text || "";
+  if (!inv || !goal) return fail('wg question <inv> "<goal>"  (defaults to the investigation goal)');
+  const reg = registry();
+  // a light dossier of the seed entity, if it exists, to ground the compile
+  const g = await loadGraph(inv.id);
+  const subj = [...g.entities.values()].find((e) => e.name.toLowerCase() === inv.seed.name.toLowerCase()) ?? [...g.entities.values()].sort((a, b) => b.claim_count - a.claim_count)[0];
+  let dossier: string | undefined;
+  if (subj) {
+    const sub = ego(g, subj.id, 1, { limit: 30 });
+    dossier = sub.links.slice(0, 20).map((l) => `${g.entities.get(l.src)?.name} —${l.predicate}→ ${g.entities.get(l.dst)?.name}`).join("; ") || undefined;
+  }
+  const templates = await indicatorTemplates(inv.seed.kind);
+  console.log(`compiling "${goal}" …`);
+  const { q, usd } = await compileQuestion(goal, { name: inv.seed.name, type: inv.seed.kind, dossier }, reg, templates);
+  const row = await saveQuestion(inv.id, subj?.id ?? null, q, "gemini-3.7-flash");
+  console.log(`
+Question ${short(row.id)}  ($${usd.toFixed(4)})`);
+  console.log(`sought: ${q.sought}`);
+  console.log(`
+indicators:`);
+  for (const ind of q.indicators) console.log(`  ${String(ind.weight).padEnd(4)} ${ind.name.padEnd(22)} ${ind.predicates.join(", ")}${ind.record_classes.length ? "  · records: " + ind.record_classes.join(", ") : ""}`);
+  console.log(`
+kill: ${q.kill_criterion}`);
+  const sr = q.stop_rule;
+  console.log(`stop: ≥2 independent on [${sr.min_independent_on.join(", ")}] · mandatory searched ${sr.mandatory_searched} · ${sr.stability_actions} quiet actions · ≤${sr.max_open_contradictions} open contradictions`);
 }
 
 async function ontology(which?: string) {
