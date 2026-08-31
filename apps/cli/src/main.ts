@@ -5,10 +5,10 @@ import { readFileSync } from "node:fs";
 import { registry, getPolicy, env, uuidv7 } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
-  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourcePublisher,
+  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourcePublisher, syncCapabilities, listCapabilities, getCachedSearch, putCachedSearch,
   type SourceRow,
 } from "@worldgraph/db";
-import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
+import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, type Side } from "@worldgraph/extract";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
@@ -23,6 +23,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -35,6 +36,8 @@ async function main() {
   switch (cmd) {
     case "db": return sub === "migrate" ? void (await migrate()) : fail("usage: wg db migrate");
     case "investigate": return investigate();
+    case "search": return search(sub ?? s("inv"), ...rest);
+    case "capabilities": case "caps": return capabilitiesCmd();
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
     case "claims": return claims(sub ?? s("inv"));
@@ -74,6 +77,8 @@ async function main() {
   wg db migrate
   wg investigate --seed "Name" [--kind person] --goal "..." --urls urls.txt [--url U ...] [--model ${DEFAULT_MODEL}] [--inv <id>] [--title T] [--refetch]
   wg investigations
+  wg search <inv> "<query>" [--engine serpapi|exa] [--num 10] [--fetch N]   find URLs; --fetch ingests top N
+  wg capabilities                the capability registry (on/off by required keys)
   wg stats <inv>
   wg claims <inv> [--limit 30] [--random] [--rejected]
   wg sources <inv>
@@ -141,41 +146,13 @@ async function investigate() {
       console.log(`[failed earlier — use --refetch to retry] ${url}`);
       continue;
     }
-    if (src) {
-      console.log(`[cached] ${url}`);
-    } else {
-      process.stdout.write(`[fetch]  ${url} … `);
-      try {
-        const r = await fetchUrl(url, { noFirecrawl: b("no-firecrawl") });
-        const hash = sha256(r.text);
-        const dup = await findSourceByHash(inv.id, hash);
-        if (dup) { console.log(`same content as ${short(dup.id)} (skipped)`); src = dup; }
-        else {
-          const key = blobKey(inv.id, hash, r.raw_ext);
-          blobs.put(key, r.raw);
-          const snapKey = r.rendered ? blobKey(inv.id, hash, "snapshot.html") : null;
-          if (snapKey && r.rendered) blobs.put(snapKey, r.rendered);
-          src = await insertSource({
-            investigation_id: inv.id, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status,
-            content_hash: hash, blob_key: key, text: r.text, link_table: r.link_table, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null,
-            meta: { attempts: r.attempts, links: r.links.length }, family_id: null, tier: null, tier_kind: null, snapshot_key: snapKey, captured_at: new Date(),
-          });
-          totals.fetched++;
-          console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · "${(r.title ?? "").slice(0, 50)}"`);
-        }
-      } catch (e) {
-        totals.failed++;
-        const msg = String((e as Error).message).slice(0, 300);
-        console.log(`FAILED\n         ${msg}`);
-        await insertSource({ investigation_id: inv.id, url, final_url: null, domain: safeHost(url), kind: "unknown", fetch_method: "http", http_status: null, content_hash: null, blob_key: null, text: null, title: null, published_at: null, lang: null, status: "failed", error: msg, meta: {}, family_id: null, tier: null, tier_kind: null, snapshot_key: null, captured_at: null });
-        continue;
-      }
-    }
-    if (!src?.text) continue;
-    const sum = await extractSource(ctx, src);
-    if (sum.chunks && sum.skipped === sum.chunks) console.log(`         (already extracted with ${model.label})`);
-    if (sum.publisher_name) await setSourcePublisher(src.id, sum.publisher_name, sum.publisher_kind ?? "unknown");
-    await updateSourceStatus(src.id, "extracted");
+    const res = await ingestUrl(inv.id, ctx, blobs, url, src, { noFirecrawl: b("no-firecrawl") });
+    if (res.status === "failed") { totals.failed++; continue; }
+    if (res.status === "cached") console.log(`[cached] ${url}`);
+    if (res.status === "fetched") totals.fetched++;
+    src = res.src;
+    if (!src?.text || !res.sum) continue;
+    const sum = res.sum;
     totals.relations += sum.relations; totals.attributes += sum.attributes; totals.rejected += sum.rejected; totals.fuzzy += sum.fuzzy; totals.other += sum.candidates; totals.usd += sum.usd;
     for (const [k, v] of Object.entries(sum.rejectReasons)) totals.rejectReasons[k] = (totals.rejectReasons[k] ?? 0) + v;
   }
@@ -187,6 +164,91 @@ async function investigate() {
   if (Object.keys(totals.rejectReasons).length) console.log(`reject reasons: ${Object.entries(totals.rejectReasons).map(([k, v]) => `${k}=${v}`).join(", ")}`);
   const st = await investigationStats(inv.id);
   console.log(`investigation total: ${st.relations} relations, ${st.attributes} attributes, ${st.rejected} rejected, $${Number(st.usd).toFixed(3)}`);
+}
+
+type IngestResult = { status: "cached" | "fetched" | "duplicate" | "failed"; src: SourceRow | null; sum?: Awaited<ReturnType<typeof extractSource>> };
+
+/** Fetch (unless `existing` is given), store, extract, set publisher — the shared per-URL pipeline used by
+ *  `investigate` and `search --fetch`. Never rebuilds; the caller rebuilds once at the end. */
+async function ingestUrl(invId: string, ctx: Parameters<typeof extractSource>[0], blobs: FsBlobStore, url: string, existing: SourceRow | null, opts: { noFirecrawl?: boolean } = {}): Promise<IngestResult> {
+  let src = existing;
+  let status: IngestResult["status"] = "cached";
+  if (!src) {
+    process.stdout.write(`[fetch]  ${url} … `);
+    try {
+      const r = await fetchUrl(url, { noFirecrawl: opts.noFirecrawl });
+      const hash = sha256(r.text);
+      const dup = await findSourceByHash(invId, hash);
+      if (dup) { console.log(`same content as ${short(dup.id)} (skipped)`); src = dup; status = "duplicate"; }
+      else {
+        const key = blobKey(invId, hash, r.raw_ext);
+        blobs.put(key, r.raw);
+        const snapKey = r.rendered ? blobKey(invId, hash, "snapshot.html") : null;
+        if (snapKey && r.rendered) blobs.put(snapKey, r.rendered);
+        src = await insertSource({
+          investigation_id: invId, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status,
+          content_hash: hash, blob_key: key, text: r.text, link_table: r.link_table, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null,
+          meta: { attempts: r.attempts, links: r.links.length }, family_id: null, tier: null, tier_kind: null, snapshot_key: snapKey, captured_at: new Date(),
+        });
+        status = "fetched";
+        console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · "${(r.title ?? "").slice(0, 50)}"`);
+      }
+    } catch (e) {
+      const msg = String((e as Error).message).slice(0, 300);
+      console.log(`FAILED\n         ${msg}`);
+      await insertSource({ investigation_id: invId, url, final_url: null, domain: safeHost(url), kind: "unknown", fetch_method: "http", http_status: null, content_hash: null, blob_key: null, text: null, link_table: [], title: null, published_at: null, lang: null, status: "failed", error: msg, meta: {}, family_id: null, tier: null, tier_kind: null, snapshot_key: null, captured_at: new Date() });
+      return { status: "failed", src: null };
+    }
+  }
+  if (!src?.text) return { status, src };
+  const sum = await extractSource(ctx, src);
+  if (sum.publisher_name) await setSourcePublisher(src.id, sum.publisher_name, sum.publisher_kind ?? "unknown");
+  await updateSourceStatus(src.id, "extracted");
+  return { status, src, sum };
+}
+
+async function capabilitiesCmd() {
+  await syncCapabilities((name) => !!process.env[name]);
+  for (const c of await listCapabilities()) {
+    const need = (c.requires as { key?: string }).key;
+    console.log(`${c.enabled ? "on " : "OFF"}  ${c.id.padEnd(24)} ${c.kind.padEnd(8)} ${c.tier}  ${c.inputs.join(",").padEnd(10)} → ${c.outputs.join(",").padEnd(6)}  $${c.cost_usd}${need ? `  needs ${need}${c.enabled ? "" : " (missing)"}` : ""}`);
+  }
+}
+
+async function search(id?: string, ...queryParts: string[]) {
+  const inv = id ? await getInvestigation(id) : null;
+  // queryParts is raw argv after the sub-command, so strip flag tokens (--x value) before joining the query
+  const clean: string[] = [];
+  for (let i = 0; i < queryParts.length; i++) { if (queryParts[i]!.startsWith("-")) { i++; continue; } clean.push(queryParts[i]!); }
+  const q = (s("q") || clean.filter(Boolean).join(" ")).trim();
+  if (!inv || !q) return fail('wg search <inv> "<query>" [--engine serpapi|exa] [--num 10] [--fetch N] [--model <m>]');
+  const engine = (s("engine") ?? "serpapi").toLowerCase();
+  const capId = engine.startsWith("exa") ? "search.exa" : "search.serpapi.google";
+  const num = Number(s("num") ?? 10);
+  const cacheKey = `${capId}|${q.toLowerCase().trim()}|${num}`;
+  let result: SearchResult;
+  const cached = await getCachedSearch(cacheKey);
+  if (cached) { result = cached.result as SearchResult; console.log(`(cached ${new Date(cached.fetched_at).toISOString().slice(0, 10)})`); }
+  else {
+    result = capId === "search.exa" ? await exaSearch(q, { num }) : await serpApiSearch(q, { num });
+    await putCachedSearch(cacheKey, capId, { q, num }, result, "7 days");
+  }
+  console.log(`\n${result.engine}  "${q}"  ${result.hits.length} hits\n`);
+  for (const h of result.hits) console.log(`${String(h.rank).padStart(2)}. ${h.url}\n    ${(h.title ?? "").slice(0, 90)}${h.snippet ? "\n    " + h.snippet.replace(/\s+/g, " ").slice(0, 120) : ""}`);
+  const n = Number(s("fetch") ?? 0);
+  if (n > 0) {
+    const model = getModel(s("model") ?? DEFAULT_MODEL);
+    if (!hasKeyFor(model)) return fail(`no API key for ${model.label}`);
+    const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model, policy: getPolicy("unrestricted"), registry: registry(), log: (m: string) => console.log(m) };
+    const blobs = new FsBlobStore();
+    console.log(`\nfetching top ${n} …`);
+    for (const h of result.hits.slice(0, n)) {
+      const existing = await findSourceByUrl(inv.id, h.url);
+      if (existing && existing.status !== "failed") { console.log(`[cached] ${h.url}`); continue; }
+      await ingestUrl(inv.id, ctx, blobs, h.url, null);
+    }
+    await rebuildCmd(inv.id);
+  }
 }
 
 async function ontology(which?: string) {
