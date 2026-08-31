@@ -10,7 +10,7 @@ import {
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, type Side } from "@worldgraph/extract";
-import { compileQuestion, saveQuestion, indicatorTemplates } from "@worldgraph/plan";
+import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -24,7 +24,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -39,6 +39,8 @@ async function main() {
     case "investigate": return investigate();
     case "search": return search(sub ?? s("inv"), ...rest);
     case "question": return question(sub ?? s("inv"), ...rest);
+    case "dispatch": return void (await dispatch(sub ?? s("inv")));
+    case "run": return runLoop(sub ?? s("inv"));
     case "capabilities": case "caps": return capabilitiesCmd();
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
@@ -82,6 +84,8 @@ async function main() {
   wg search <inv> "<query>" [--engine serpapi|exa] [--num 10] [--fetch N]   find URLs; --fetch ingests top N
   wg capabilities                the capability registry (on/off by required keys)
   wg question <inv> "<goal>"     compile a goal into a Question (indicators + stop rule)
+  wg dispatch <inv>              gaps → scored missions (what to look for next)
+  wg run <inv> [--max 5] [--per 3]   autonomous pass: dispatch → search+fetch the top missions → rebuild
   wg stats <inv>
   wg claims <inv> [--limit 30] [--random] [--rejected]
   wg sources <inv>
@@ -283,6 +287,72 @@ indicators:`);
 kill: ${q.kill_criterion}`);
   const sr = q.stop_rule;
   console.log(`stop: ≥2 independent on [${sr.min_independent_on.join(", ")}] · mandatory searched ${sr.mandatory_searched} · ${sr.stability_actions} quiet actions · ≤${sr.max_open_contradictions} open contradictions`);
+}
+
+async function ensureQuestion(inv: NonNullable<Awaited<ReturnType<typeof getInvestigation>>>, g: Awaited<ReturnType<typeof loadGraph>>) {
+  const open = await openQuestions(inv.id);
+  if (open[0]) return open[0];
+  const subj = [...g.entities.values()].find((e) => e.name.toLowerCase() === inv.seed.name.toLowerCase()) ?? [...g.entities.values()].sort((a, b) => b.claim_count - a.claim_count)[0];
+  const templates = await indicatorTemplates(inv.seed.kind);
+  console.log("no question yet — compiling from the investigation goal …");
+  const { q } = await compileQuestion(inv.goal_text, { name: inv.seed.name, type: inv.seed.kind }, registry(), templates);
+  return saveQuestion(inv.id, subj?.id ?? null, q, "gemini-3.7-flash");
+}
+
+function subjectOf(g: Awaited<ReturnType<typeof loadGraph>>, q: { subject_entity_id: string | null }, seedName: string) {
+  return (q.subject_entity_id && g.entities.get(q.subject_entity_id)) || [...g.entities.values()].find((e) => e.name.toLowerCase() === seedName.toLowerCase()) || [...g.entities.values()].sort((a, b) => b.claim_count - a.claim_count)[0];
+}
+
+async function dispatch(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg dispatch <inv>");
+  const g = await loadGraph(inv.id);
+  const q = await ensureQuestion(inv, g);
+  const subj = subjectOf(g, q, inv.seed.name);
+  if (!subj) return fail("no subject entity in the graph yet — run an initial fetch first");
+  const minOrigins = Number((q.stop_rule as { min_independent_on?: string[] })?.min_independent_on ? 2 : 2);
+  const gaps = computeGaps(g, subj.id, q.indicators, minOrigins);
+  const drafts = buildMissions(gaps);
+  await saveMissions(inv.id, q.id, drafts);
+  console.log(`subject: ${subj.name}  ·  ${q.indicators.length} indicators  ·  ${gaps.length} gaps → ${drafts.length} missions\n`);
+  for (const m of drafts) console.log(`${m.score.toFixed(2)}  ${m.objective}\n       ↳ ${m.frontier[0]}`);
+  return drafts;
+}
+
+async function runLoop(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail('wg run <inv> [--max 5] [--per 3] [--model <m>]');
+  const model = getModel(s("model") ?? DEFAULT_MODEL);
+  if (!hasKeyFor(model)) return fail(`no API key for ${model.label}`);
+  const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model, policy: getPolicy("unrestricted"), registry: registry(), log: () => {} };
+  const blobs = new FsBlobStore();
+  const max = Number(s("max") ?? 5), per = Number(s("per") ?? 3);
+  await dispatch(inv.id);
+  const missions = await proposedMissions(inv.id, max);
+  if (!missions.length) return console.log("\nno open missions — the graph already satisfies the question's indicators");
+  console.log(`\nrunning top ${missions.length} missions (${per} pages each) …\n`);
+  let fetched = 0, spent = 0;
+  for (const m of missions) {
+    await setMissionState(m.id, "running");
+    const query0 = m.frontier[0] ?? "";
+    console.log(`▸ ${m.objective}`);
+    let got = 0; const trail: string[] = [];
+    try {
+      const res = await serpApiSearch(query0, { num: 8 }); spent += res.usd;
+      for (const h of res.hits.slice(0, per)) {
+        const existing = await findSourceByUrl(inv.id, h.url);
+        if (existing && existing.status !== "failed") continue;
+        const r = await ingestUrl(inv.id, ctx, blobs, h.url, null);
+        if (r.status === "fetched") { fetched++; got++; trail.push(h.url); if (r.sum) spent += r.sum.usd; }
+      }
+    } catch (e) { console.log(`   (search failed: ${String((e as Error).message).slice(0, 80)})`); }
+    await setMissionState(m.id, "done", got ? "found" : "no_trace", trail);
+    console.log(`   ${got} new page${got === 1 ? "" : "s"} ingested`);
+  }
+  console.log(`\ningested ${fetched} pages · $${spent.toFixed(3)} · rebuilding …`);
+  await rebuildCmd(inv.id);
+  await judge(inv.id);
+  console.log(`\nloop pass complete. run again to go deeper, or wg dossier ${short(inv.id)} "${inv.seed.name}".`);
 }
 
 async function ontology(which?: string) {
