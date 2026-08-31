@@ -7,7 +7,6 @@ import {
 } from "@worldgraph/core";
 import { hasExtraction, insertClaimsAndExtraction, type SourceRow, type ExtractionStats } from "@worldgraph/db";
 import { chunkText, type Chunk } from "./chunk.ts";
-import { prepareText, locateQuote, surfaceInQuote } from "./quoteGate.ts";
 import { systemPrompt, promptVersion, contextBlock, userPrompt, type InvestigationContext } from "./prompt.ts";
 import { callModel, type ModelSpec } from "./providers.ts";
 
@@ -113,7 +112,6 @@ function timeOf(t: TimeOut, assertedAt: string | null, kindDefault?: Time["tempo
 
 export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk, out: ExtractionOutput, pv: string, usd: number, seen: Set<string>, assertedAt: string | null): { claims: (RelationClaim | AttributeClaim)[]; stats: BuildStats } {
   const stats: BuildStats = { relations: 0, attributes: 0, rejected: 0, redacted: 0, fuzzy: 0, candidates: 0, derived: 0, rejectReasons: {} };
-  const prepared = prepareText(chunk.text);
   const perItemCost = usd / Math.max(1, out.relations.length + out.attributes.length);
   const extractor = { model: ctx.model.id, prompt_version: pv, effort: ctx.model.effort ?? null, cost_usd: Number(perItemCost.toFixed(6)) };
   const refs = new Map(out.mentions.map((m) => [m.ref, m]));
@@ -121,23 +119,25 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
     const m = refs.get(ref);
     if (!m) return null;
     const rt = ctx.registry.resolveNodeType(m.type === "candidate" ? (m.type_label || "candidate") : m.type, m.type_parent || undefined);
-    return { surface: m.surface, name: m.name || m.surface, type: rt.type, type_label: rt.label, kind: m.kind || null, hints: kvToRecord(m.hints), surface_in_quote: surfaceInQuote(m.surface, quote) };
+    return { surface: m.surface, name: m.name || m.surface, type: rt.type, type_label: rt.label, kind: m.kind || null, hints: kvToRecord(m.hints), surface_in_quote: false };
   };
   const reject = (reason: string) => { stats.rejected++; stats.rejectReasons[reason] = (stats.rejectReasons[reason] ?? 0) + 1; };
   const claims: (RelationClaim | AttributeClaim)[] = [];
 
+  // The quote is stored as provenance; it is no longer located or gated (model v0.3 §1.3). A ±150-char
+  // passage is kept when the quote is found verbatim in the chunk, purely for display — never to reject.
   const provenance = (quote: string, conf: number, attrClass: AttributeClass, t: TimeOut, kindDefault?: Time["temporal_kind"]) => {
-    const loc = locateQuote(quote, prepared);
-    const passage = loc ? chunk.text.slice(Math.max(0, loc.start - 150), Math.min(chunk.text.length, loc.end + 150)).replace(/\s+/g, " ").trim() : null;
+    const at = quote ? chunk.text.indexOf(quote) : -1;
+    const passage = at >= 0 ? chunk.text.slice(Math.max(0, at - 150), Math.min(chunk.text.length, at + quote.length + 150)).replace(/\s+/g, " ").trim() : null;
     return {
       prov: {
         investigation_id: source.investigation_id, source_id: source.id, chunk_index: chunk.index, chunk_hash: chunk.hash,
-        quote, passage, span_start: loc ? chunk.start + loc.start : null, span_end: loc ? chunk.start + loc.end : null, span_method: loc?.method ?? null,
+        quote, passage, span_start: at >= 0 ? chunk.start + at : null, span_end: at >= 0 ? chunk.start + at + quote.length : null, span_method: (at >= 0 ? "exact" : null) as "exact" | "fuzzy" | null,
         extractor_conf_raw: conf, verified: null, attribute_class: attrClass,
-        status: (loc ? "raw" : "rejected") as RelationClaim["status"], reject_reason: loc ? null : "quote_not_found", redaction_reason: null,
+        status: "raw" as RelationClaim["status"], reject_reason: null, redaction_reason: null,
         inferred: !!t.inferred, derivation: t.derivation ? { rule: t.derivation } : null, schema_version: ctx.registry.hash, extractor,
         ...timeOf(t, assertedAt, kindDefault),
-      }, loc,
+      }, loc: at >= 0 ? { method: "exact" } : null,
     };
   };
 
@@ -152,14 +152,13 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
       object: object ?? { surface: r.object, name: r.object, type: "artifact", type_label: null, kind: null, hints: {}, surface_in_quote: false },
       qualifiers: kvToRecord(r.qualifiers) };
     if (!subject || !object) { claim.status = "rejected"; claim.reject_reason = "bad_ref"; reject("bad_ref"); }
-    else if (claim.status === "rejected") reject("quote_not_found");
     else if (rp.fallback && !r.candidate_label) { claim.status = "rejected"; claim.reject_reason = "unknown_predicate"; reject("unknown_predicate"); }
     else {
       const v = ctx.registry.validateRelation(subject.type, rp.predicate, object.type);
       if (!v.ok) { claim.status = "rejected"; claim.reject_reason = "type_violation: " + v.reason; reject("type_violation"); }
     }
     finalize(claim, `r|${claim.subject.name}|${rp.predicate}|${rp.specific ?? ""}|${claim.object.name}|${claim.span_start ?? claim.quote}`);
-    if (claim.status === "raw") { stats.relations++; if (rp.specific) stats.candidates++; if (loc?.method === "fuzzy") stats.fuzzy++; }
+    if (claim.status === "raw") { stats.relations++; if (rp.specific) stats.candidates++; }
   }
 
   for (const a of out.attributes) {
@@ -180,9 +179,8 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
       entity: entity ?? { surface: a.entity, name: a.entity, type: "artifact", type_label: null, kind: null, hints: {}, surface_in_quote: false },
       key, key_specific: specific, value, value_norm: normValue(value), datatype };
     if (!entity) { claim.status = "rejected"; claim.reject_reason = "bad_ref"; reject("bad_ref"); }
-    else if (claim.status === "rejected") reject("quote_not_found");
     finalize(claim, `a|${claim.entity.name}|${key}|${specific ?? ""}|${claim.value_norm}`);
-    if (claim.status === "raw") { stats.attributes++; if (specific) stats.candidates++; if (loc?.method === "fuzzy") stats.fuzzy++; }
+    if (claim.status === "raw") { stats.attributes++; if (specific) stats.candidates++; }
   }
   // duration hints on relations ("10 years at X") are handled by the model via valid_from ≈ page − N (circa); startFromDuration is exported for connectors.
   void startFromDuration;

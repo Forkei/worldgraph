@@ -9,7 +9,7 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource, judgePair, prepareText, locateQuote, type Side } from "@worldgraph/extract";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource, judgePair, type Side } from "@worldgraph/extract";
 import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -64,7 +64,6 @@ async function main() {
     case "retract": return retract(sub ?? s("inv"), rest[0]);
     case "reinstate": return retract(sub ?? s("inv"), rest[0], true);
     case "gold": return goldCmd(sub ?? s("inv"), rest[0], rest[1]);
-    case "regate": return regate(sub ?? s("inv"));
     case "entities": return entities(sub ?? s("inv"));
     case "dossier": return dossier(sub ?? s("inv"), rest[0]);
     case "gaps": return gaps(sub ?? s("inv"));
@@ -106,7 +105,6 @@ async function main() {
   wg decisions <inv>             the decisions log
   wg retract <inv> <source|domain> [--note]   withdraw a source: its claims leave, dependents re-derive; wg reinstate undoes
   wg gold <inv> export|eval <file.yaml>       write the current clustering for review / score B³ against the reviewed file
-  wg regate <inv>                re-run the quote gate on rejected claims (after a gate improvement)
   wg rules [sync]                list rules / load YAML rules into the table
   wg tiers [<pattern> <tier>]    list or set source reliability tiers
   wg sql "<select ...>"`);
@@ -629,29 +627,6 @@ async function goldCmd(id?: string, sub2?: string, file?: string) {
 }
 
 // ---- re-run the quote gate on rejected claims (after a gate improvement) ----
-async function regate(id?: string) {
-  const inv = id ? await getInvestigation(id) : null;
-  if (!inv) return fail("wg regate <inv>");
-  const srcs = await query<{ id: string; text: string }>(`SELECT id, text FROM sources WHERE investigation_id=$1 AND text IS NOT NULL`, [inv.id]);
-  let checked = 0, restored = 0;
-  for (const src of srcs) {
-    const prepared = prepareText(src.text);
-    for (const t of ["relation_claims", "attribute_claims"]) {
-      const rows = await query<{ id: string; quote: string }>(`SELECT id, quote FROM ${t} WHERE source_id=$1 AND status='rejected' AND reject_reason='quote_not_found'`, [src.id]);
-      for (const r of rows) {
-        checked++;
-        const loc = locateQuote(r.quote, prepared);
-        if (!loc) continue;
-        const passage = src.text.slice(Math.max(0, loc.start - 150), Math.min(src.text.length, loc.end + 150)).replace(/\s+/g, " ").trim();
-        await query(`UPDATE ${t} SET status='raw', reject_reason=NULL, span_start=$2, span_end=$3, span_method=$4, passage=$5 WHERE id=$1`, [r.id, loc.start, loc.end, loc.method, passage]);
-        restored++;
-      }
-    }
-  }
-  console.log(`re-gated ${checked} rejected claims · ${restored} now locate and are back in`);
-  if (restored) { await runOriginClustering(inv.id); await rebuildCmd(inv.id); }
-}
-
 async function investigations() {
   for (const i of await listInvestigations()) {
     const st = await investigationStats(i.id);
