@@ -586,7 +586,7 @@ async function whyCmd(id?: string, ref?: string) {
     let lastOrigin = "";
     for (const c of w.claims) {
       if (c.origin && c.origin !== lastOrigin) { console.log(`    origin ${short(c.origin)}`); lastOrigin = c.origin; }
-      console.log(`      [${c.tier}] ${c.domain}${c.doc_kind ? " (" + c.doc_kind + ")" : ""}${c.asserted_at ? " " + c.asserted_at : ""}  ${c.text}`);
+      console.log(`      ${c.domain}${c.publisher_kind ? " [" + c.publisher_kind + "]" : ""}${c.asserted_at ? " " + c.asserted_at : ""}  ${c.text}`);
       console.log(`          “${c.quote.replace(/\s+/g, " ").slice(0, 200)}”`);
       console.log(`          ${c.url}`);
     }

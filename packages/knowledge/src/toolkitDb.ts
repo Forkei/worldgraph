@@ -24,7 +24,7 @@ export async function loadGraph(investigationId: string): Promise<Graph> {
   return makeGraph(E, L, A);
 }
 
-export interface WhyClaim { id: string; kind: "relation" | "attribute"; text: string; quote: string; url: string; domain: string; doc_kind: string | null; tier: string; asserted_at: string | null; origin: string | null }
+export interface WhyClaim { id: string; kind: "relation" | "attribute"; text: string; quote: string; url: string; domain: string; publisher: string | null; publisher_kind: string | null; asserted_at: string | null; origin: string | null }
 export interface Why {
   kind: string; id: string; label: string;
   supports: { kind: string; id: string; label?: string }[];
@@ -66,14 +66,14 @@ export async function why(investigationId: string, kind: "link" | "attribute" | 
   if (ruleId) { const [r] = await query<{ id: string; name: string }>(`SELECT id, name FROM rules WHERE id=$1`, [ruleId]); out.rule = r ?? { id: ruleId, name: ruleId }; }
   if (claimIds.length) {
     const rel = await query<Record<string, any>>(
-      `SELECT c.id, c.subject->>'name' s, c.predicate, c.object->>'name' o, c.qualifiers, c.quote, c.asserted_at, c.origin_cluster_id, src.url, src.domain, src.doc_kind, src.tier
+      `SELECT c.id, c.subject->>'name' s, c.predicate, c.object->>'name' o, c.qualifiers, c.quote, c.asserted_at, c.origin_cluster_id, src.url, src.domain, src.publisher_name, src.publisher_kind
          FROM relation_claims c JOIN sources src ON src.id=c.source_id WHERE c.id = ANY($1::uuid[])`, [claimIds]);
     const attr = await query<Record<string, any>>(
-      `SELECT c.id, c.entity->>'name' s, c.key, c.value, c.quote, c.asserted_at, c.origin_cluster_id, src.url, src.domain, src.doc_kind, src.tier
+      `SELECT c.id, c.entity->>'name' s, c.key, c.value, c.quote, c.asserted_at, c.origin_cluster_id, src.url, src.domain, src.publisher_name, src.publisher_kind
          FROM attribute_claims c JOIN sources src ON src.id=c.source_id WHERE c.id = ANY($1::uuid[])`, [claimIds]);
     const q = (x: Record<string, string> | null) => x && Object.keys(x).length ? " {" + Object.entries(x).map(([k, v]) => `${k}: ${v}`).join(", ") + "}" : "";
-    for (const r of rel) out.claims.push({ id: r.id, kind: "relation", text: `${r.s} —${r.predicate}→ ${r.o}${q(r.qualifiers)}`, quote: r.quote, url: r.url, domain: r.domain, doc_kind: r.doc_kind, tier: r.tier ?? "?", asserted_at: d(r.asserted_at), origin: r.origin_cluster_id });
-    for (const a of attr) out.claims.push({ id: a.id, kind: "attribute", text: `${a.s} · ${a.key} = ${a.value}`, quote: a.quote, url: a.url, domain: a.domain, doc_kind: a.doc_kind, tier: a.tier ?? "?", asserted_at: d(a.asserted_at), origin: a.origin_cluster_id });
+    for (const r of rel) out.claims.push({ id: r.id, kind: "relation", text: `${r.s} —${r.predicate}→ ${r.o}${q(r.qualifiers)}`, quote: r.quote, url: r.url, domain: r.domain, publisher: r.publisher_name, publisher_kind: r.publisher_kind, asserted_at: d(r.asserted_at), origin: r.origin_cluster_id });
+    for (const a of attr) out.claims.push({ id: a.id, kind: "attribute", text: `${a.s} · ${a.key} = ${a.value}`, quote: a.quote, url: a.url, domain: a.domain, publisher: a.publisher_name, publisher_kind: a.publisher_kind, asserted_at: d(a.asserted_at), origin: a.origin_cluster_id });
     out.claims.sort((x, y) => (x.origin ?? "").localeCompare(y.origin ?? "") || x.domain.localeCompare(y.domain));
   }
   out.supports = supports;

@@ -19,6 +19,14 @@ interface ClaimRow {
 }
 interface Mention { surface: string; name: string; type: string; kind?: string | null; hints?: Record<string, string> }
 
+/** Parse a date value/EDTF into a [lo,hi] interval so overlapping dates aren't flagged as contradictions.
+ *  "1985-10-05" → that day; "1985" → the whole year; "[1985-05-09,1986-05-08]" → the stated range. */
+function valueInterval(v: string): { lo: string; hi: string } | null {
+  const ds = v.match(/\d{4}(?:-\d{2}(?:-\d{2})?)?/g);
+  if (!ds || !ds.length) return null;
+  const exp = (d: string, end: boolean) => (d.length === 4 ? d + (end ? "-12-31" : "-01-01") : d.length === 7 ? d + (end ? "-28" : "-01") : d);
+  return ds.length >= 2 ? { lo: exp(ds[0]!, false), hi: exp(ds[ds.length - 1]!, true) } : { lo: exp(ds[0]!, false), hi: exp(ds[0]!, true) };
+}
 const FUNCTIONAL_ATTRIBUTES = new Set(["date_of_birth", "date_of_death", "founded_on", "dissolved_on", "gender"]);
 const today = () => new Date().toISOString().slice(0, 10);
 const dstr = (v: string | Date | null) => (v == null ? null : v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10));
@@ -185,6 +193,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   }
   const attrAgg = new Map<string, Agg & { entity: string; key: string; specific: string | null; value: string; value_norm: string; datatype: string }>();
   const perEntityKeyValues = new Map<string, Set<string>>();
+  const perEntityKeyIvals = new Map<string, { lo: string; hi: string }[]>();   // date functional attrs: consistent iff all intervals share a point
   for (const a of attr) {
     const e = attrMap.get(a.id)!;
     const k = `${e}|${a.key}|${a.key_specific ?? ""}|${a.value_norm}`;
@@ -192,6 +201,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     if (!g) { g = { ids: [], origins: new Map(), tiers: [], fuzzy: 0, rows: [], entity: e, key: a.key!, specific: a.key_specific, value: a.value!, value_norm: a.value_norm!, datatype: a.datatype! }; attrAgg.set(k, g); }
     g.ids.push(a.id); g.origins.set(originKey(a), a.tier ?? "F"); g.tiers.push(a.tier ?? "F"); if (a.span_method === "fuzzy") g.fuzzy++; g.rows.push(a);
     const ek = `${e}|${a.key}`; (perEntityKeyValues.get(ek) ?? perEntityKeyValues.set(ek, new Set()).get(ek)!).add(a.value_norm!);
+    if (a.datatype === "date" || a.datatype === "date_range") { const iv = valueInterval(a.value ?? ""); if (iv) (perEntityKeyIvals.get(ek) ?? perEntityKeyIvals.set(ek, []).get(ek)!).push(iv); }
   }
 
   const byGrade: Record<string, number> = {};
@@ -289,7 +299,14 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
       }
     }
     for (const g of attrAgg.values()) {
-      const contested = FUNCTIONAL_ATTRIBUTES.has(g.key) && (perEntityKeyValues.get(`${g.entity}|${g.key}`)?.size ?? 0) > 1;
+      const ek = `${g.entity}|${g.key}`;
+      let contested = FUNCTIONAL_ATTRIBUTES.has(g.key) && (perEntityKeyValues.get(ek)?.size ?? 0) > 1;
+      const ivals = perEntityKeyIvals.get(ek);
+      if (contested && ivals && ivals.length > 1) {
+        const maxLo = ivals.reduce((m, i) => (i.lo > m ? i.lo : m), ivals[0]!.lo);
+        const minHi = ivals.reduce((m, i) => (i.hi < m ? i.hi : m), ivals[0]!.hi);
+        if (maxLo <= minHi) contested = false;   // a single date is consistent with every value → not a contradiction
+      }
       const p = profile(g, contested), gr = grade(p), t = timeAgg(g.rows);
       const id = stableId(investigationId, "attribute", g.entity, g.key, g.specific ?? "", g.value_norm);
       await c.query(

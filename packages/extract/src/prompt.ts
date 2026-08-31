@@ -16,7 +16,8 @@ Output four things:
 
 Time, on every relation and attribute:
 - temporal_kind: interval (true for a period: works_at, lives_at, owns, spouse_of), instant (a point event: participated_in, paid, created), snapshot (an observation at a time: title, follower_count, status, description), timeless (date_of_birth, founded_on, registry_id).
-- valid_from / valid_to / date: EDTF exactly as the text supports it — 2019, 2019-05, 2019-05-16, 2019~ (approximate), 2019? (uncertain), [1984,1985] (one of). Empty when the text gives nothing; never invent. An interval that is ongoing has empty valid_to.
+- valid_from / valid_to / date: EDTF exactly as the text supports it — 2019, 2019-05, 2019-05-16, 2019~ (approximate), 2019? (uncertain), [1984,1985] (one of). Empty when the text gives nothing; never invent precision the text lacks (write 2019, not 2019-01-01).
+- ONGOING periods have NO end: leave valid_to EMPTY for anything current ("is CEO", "since 2021", "currently", "present", "—", "10 years and counting"). Set valid_to ONLY when the text marks an end ("until 2023", "left", "former", "stepped down", "through 2020"). NEVER use the page date or the current year as an end date — an open role is open.
 - time_qualifier: exact | circa | before | after | unknown.
 - NEVER emit derived quantities. "age 34" → attribute date_of_birth with value [YYYY-35,YYYY-34] relative to the page date, derivation "age_at_date". "10 years at Acme" → valid_from ≈ page year − 10 with time_qualifier circa, derivation "duration". "former" / "previously" → valid_to unknown but before the page date (time_qualifier before).
 - inferred: true when you concluded something the text does not state outright; false when the text states it.
