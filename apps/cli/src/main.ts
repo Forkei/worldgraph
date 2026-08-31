@@ -24,7 +24,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -85,7 +85,7 @@ async function main() {
   wg capabilities                the capability registry (on/off by required keys)
   wg question <inv> "<goal>"     compile a goal into a Question (indicators + stop rule)
   wg dispatch <inv>              gaps → scored missions (what to look for next)
-  wg run <inv> [--max 5] [--per 3]   autonomous pass: dispatch → search+fetch the top missions → rebuild
+  wg run <inv> [--max 5] [--per 3] [--loop] [--passes 4]   autonomous: dispatch → agents work missions → rebuild; --loop repeats until stable
   wg stats <inv>
   wg claims <inv> [--limit 30] [--random] [--rejected]
   wg sources <inv>
@@ -418,14 +418,18 @@ async function runLoop(id?: string) {
   const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model, policy: getPolicy("unrestricted"), registry: registry(), log: () => {} };
   const blobs = new FsBlobStore();
   const max = Number(s("max") ?? 5), per = Number(s("per") ?? 3);
-  await dispatch(inv.id);
-  const missions = await proposedMissions(inv.id, max);
-  if (!missions.length) return console.log("\nno open missions — the graph already satisfies the question's indicators");
-  console.log(`\nrunning top ${missions.length} missions (${per} pages each) …\n`);
-  let fetched = 0, spent = 0;
+  const maxPasses = b("loop") ? Number(s("passes") ?? 4) : 1;
   const agentModel = getModel(s("agent-model") ?? "haiku-4-5");
   const useAgent = !b("scripted") && hasKeyFor(agentModel);
-  for (const m of missions) {
+  let fetched = 0, spent = 0, stop = "";
+  for (let pass = 1; pass <= maxPasses && !stop; pass++) {
+   if (maxPasses > 1) console.log(`\n════ pass ${pass}/${maxPasses} ════`);
+   const before = await investigationStats(inv.id);
+   await dispatch(inv.id);
+   const missions = await proposedMissions(inv.id, max);
+   if (!missions.length) { stop = "no open gaps — the question's indicators are satisfied"; break; }
+   console.log(`\nrunning top ${missions.length} missions (${per} pages each) …`);
+   for (const m of missions) {
     await setMissionState(m.id, "running");
     console.log(`
 ▸ ${m.objective}`);
@@ -449,10 +453,15 @@ async function runLoop(id?: string) {
       console.log(`   ${got} new pages ingested`);
     }
   }
-  console.log(`\ningested ${fetched} pages · $${spent.toFixed(3)} · rebuilding …`);
-  await rebuildCmd(inv.id);
-  await judge(inv.id);
-  console.log(`\nloop pass complete. run again to go deeper, or wg dossier ${short(inv.id)} "${inv.seed.name}".`);
+   console.log(`\n  rebuilding …`);
+   await rebuildCmd(inv.id);
+   await judge(inv.id);
+   const after = await investigationStats(inv.id);
+   const added = (Number(after.relations) + Number(after.attributes)) - (Number(before.relations) + Number(before.attributes));
+   if (maxPasses > 1 && added <= 0) { stop = `pass ${pass} added no new facts — stable`; break; }
+  }
+  console.log(`\n── done ── ${fetched} pages · $${spent.toFixed(3)}${stop ? `\nstopped: ${stop}` : ""}`);
+  console.log(`wg dossier ${short(inv.id)} "${inv.seed.name}"`);
 }
 
 async function ontology(which?: string) {
