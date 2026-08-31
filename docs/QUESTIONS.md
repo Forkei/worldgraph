@@ -46,3 +46,11 @@
 + Keep a repo and keep things up to date with commits. Work clean and organized.
 
 Folded into `PRODUCT_SPEC.md` §9 (decisions log) and the reordered `BUILD_PLAN.md` the same day.
+
+## Parked 2026-08-31 — extraction (stage-3 review; the maintainer wants to answer these later)
+1. Extraction has no measured precision/recall — start with a 50-claim labelled sample from the three seeds?
+2. Agent-as-reader: whole page in context (no chunks) — confirmed direction; how much context does the reader get beyond the page (mission, subgraph digest)?
+3. Claims-while-reading: keep the registry-compiled JSON schema as the guardrail, or loosen it for agents? (My strong view: keep it.)
+4. Qualifier keys (role/title/unit…) are uncontrolled vocabulary — normalize them in the registry like predicates?
+5. Mention hints carry the identity keys unaudited — should the reader be asked to justify each hard key (where on the page it saw it)?
+6. extractor_conf_raw is stored and unused — drop the column or prove it correlates with error?
