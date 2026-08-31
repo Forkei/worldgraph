@@ -145,3 +145,27 @@ private individual the maintainer chooses (the original use case) · an event ·
 ## Prerequisites
 Anthropic, Gemini, Firecrawl keys (have). SerpAPI + Exa keys (M2, approved). Postgres runs natively (Docker
 unavailable on this machine). Search-engine result storage: SerpAPI/Exa only.
+
+
+## M2 prerequisite refactors (2026-08-31) — the review's removals, built before the loop
+the maintainer's full review (INVESTIGATION_MODEL v0.3/0.4) replaced the crutches. Status:
+- **1/5 markdown canonical** ✅ — markdown is the text the reader sees; inline links → `[anchor][n]` + a
+  stored link table; the regex converter is deleted.
+- **2/5 quote gate removed** ✅ — quotes stay as provenance, never located or rejected; structural guardrails
+  (bad ref, type violation, dedup, unknown predicate) and the registry schema remain the wall.
+- **3a/5 publisher ladder** ✅ — reliability = the publisher's relationship to the fact (authority A / self B /
+  independent C / platform D / anonymous·unknown E), `self` graph-verified. The classifier, doc-kind priors,
+  source families and shingle origins are gone; the reader emits the publisher. athle.fr → authority (a
+  licence grades A); acorncap → self; TechCrunch/Fortune → independent; aggregators → platform.
+- **3b/5 attribution** ✅ — the reader emits `attributed_to` ("according to Reuters"); origins count by
+  attributed source, so many pages citing one filing are one origin.
+- **4/5 identity** ✅ — the resolver never merges on a score; only a shared unique identifier, a recorded
+  judgment (the verifier/agent, method `llm`, reversible), or the owner merges. Orgs get the same caution as
+  persons. Cost: more judge calls and some genuine merges now depend on the judge (seed C left the actor in
+  two entities — fixable by re-judge/human); the three namesakes stay apart, which is the point.
+- **5/5 incremental rebuild** ⏳ deferred — pure performance (full rebuild ≈ 1.5 s); it only matters once many
+  agents write concurrently, so it will be built alongside the agent/mission loop, with the full rebuild kept
+  as the byte-identical auditor.
+
+All three seeds re-run clean on the new pipeline; 67 tests pass. Next: the loop itself (M2_DESIGN v0.2) —
+missions, dispatcher, agents — starting with the capability registry + fetch/search (keys are in).
