@@ -197,7 +197,12 @@ export class Registry {
           value: { type: "string" }, datatype: { type: "string", enum: [...DATATYPES] },
           quote: { type: "string" }, confidence: { type: "number" }, attribute_class: attrClass, ...time,
         }, required: ["entity", "key", "key_parent", "value", "datatype", "quote", "confidence", "attribute_class", ...timeReq], additionalProperties: false } },
-        page: { type: "object", properties: { published_at: { type: "string", description: "EDTF if the page states a date, else empty" }, summary: { type: "string" } }, required: ["published_at", "summary"], additionalProperties: false },
+        page: { type: "object", properties: {
+          published_at: { type: "string", description: "EDTF if the page states a date, else empty" },
+          summary: { type: "string" },
+          publisher_name: { type: "string", description: "who publishes this page (the org, person, or platform whose page it is), as the page itself indicates; a hosted profile's publisher is the PLATFORM, not the profile owner" },
+          publisher_kind: { type: "string", enum: ["authority", "self", "independent", "platform", "anonymous", "unknown"], description: "the publisher's relationship to what the page reports: authority = the official/issuing body for this kind of record; self = the page is by the very subject it is about (own site/profile); independent = an independent reporter/witness; platform = a host of others' content (LinkedIn, X, a people-search aggregator); anonymous = unattributable; unknown if unclear" },
+        }, required: ["published_at", "summary", "publisher_name", "publisher_kind"], additionalProperties: false },
       },
       required: ["mentions", "relations", "attributes", "page"],
       additionalProperties: false,

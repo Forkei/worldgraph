@@ -62,6 +62,10 @@ export async function insertSource(s: Omit<SourceRow, "id" | "fetched_at">): Pro
   return rows[0]!;
 }
 
+export async function setSourcePublisher(id: string, publisherName: string | null, publisherKind: string | null): Promise<void> {
+  await query(`UPDATE sources SET publisher_name=$2, publisher_kind=$3 WHERE id=$1`, [id, publisherName || null, publisherKind || null]);
+}
+
 export async function updateSourceStatus(id: string, status: string, error: string | null = null): Promise<void> {
   await query(`UPDATE sources SET status=$2, error=$3 WHERE id=$1`, [id, status, error]);
 }

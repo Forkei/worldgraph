@@ -87,7 +87,7 @@ export interface ExtractionOutput {
   mentions: { ref: string; surface: string; name: string; type: string; type_label: string; type_parent: string; kind: string; hints: { key: string; value: string }[] }[];
   relations: ({ subject: string; predicate: string; candidate_label: string; candidate_parent: string; object: string; qualifiers: { key: string; value: string }[]; quote: string; confidence: number; attribute_class: AttributeClass } & TimeOut)[];
   attributes: ({ entity: string; key: string; key_parent: string; value: string; datatype: Datatype; quote: string; confidence: number; attribute_class: AttributeClass } & TimeOut)[];
-  page: { published_at: string; summary: string };
+  page: { published_at: string; summary: string; publisher_name: string; publisher_kind: string };
 }
 
 export const kvToRecord = (kv: { key: string; value: string }[] | undefined): Record<string, string> => {

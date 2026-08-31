@@ -1,35 +1,33 @@
-// Source reliability without hardcoded domains (model §1.2, reliability v2).
-//   tier = prior(doc_kind)                       what the document IS, classified from its own content
-//        ↑ one step if self-published about itself   a company's own team page is authoritative about its roster
-//        ± learned adjustment                     agreement / contradiction with independent origins, once enough is observed
-//        overridden by an owner decision          a row in source_tiers, if the owner chose to assert one
+// Source reliability = the publisher's relationship to the fact (model v0.3 §1.4). No doc-kind table, no
+// domain list. The reading agent names the publisher and its kind; "self" is cross-checked against the graph
+// (the publisher entity must actually be the fact's subject). The rungs ARE the Admiralty A–E scale.
+//
+//   authority   A   the issuing / official body for this kind of record (a federation about its own licences)
+//   self        B   the subject speaking about itself (a company's own team page about its roster)
+//   independent C   an independent witness / reporter
+//   platform    D   a host of others' content (a social platform, a people-search aggregator)
+//   anonymous   E   anonymous or unattributable
+//   unknown     E   publisher not established yet (cold start climbs as the graph learns who they are)
+export const LADDER: Record<string, string> = { authority: "A", self: "B", independent: "C", platform: "D", anonymous: "E", unknown: "E" };
+
 export interface SourceFacts {
-  doc_kind: string | null;
-  self_published: boolean | null;
+  publisher_kind: string | null;
   publisher_entity_id: string | null;   // resolved publisher, if it maps to an entity in the graph
-  agree_count: number;
-  contradict_count: number;
   override_tier: string | null;         // owner override, if any
 }
-export interface Priors { [docKind: string]: string }   // doc_kind → tier letter
-
-const ORDER = ["A", "B", "C", "D", "E", "F"];
-const step = (tier: string, delta: number) => ORDER[Math.min(5, Math.max(0, ORDER.indexOf(tier) + delta))]!;
-export const LEARN_MIN_OBSERVATIONS = 20;
 
 /**
- * Reliability of `source` for a claim whose subject/object entities are `claimEntities`.
- * Self-publication only helps for facts about the publisher itself (or its members, when `aboutPublisher` says so).
+ * Reliability letter for one claim. `aboutPublisher` is the graph's verdict on whether the source's publisher
+ * entity is the very entity the claim concerns (or one of its members) — that is what turns a page into
+ * self-testimony. The reader's word and the graph reconcile toward the truth:
+ *   • graph says self, reader didn't claim it (independent/unknown) → self
+ *   • reader claimed self, graph disagrees                          → at best independent
  */
-export function tierForClaim(source: SourceFacts, priors: Priors, aboutPublisher: boolean): string {
+export function tierForClaim(source: SourceFacts, aboutPublisher: boolean): string {
   if (source.override_tier) return source.override_tier;
-  let tier = priors[source.doc_kind ?? "unknown"] ?? priors.unknown ?? "F";
-  if (source.self_published && aboutPublisher) tier = step(tier, -1);
-  const n = source.agree_count + source.contradict_count;
-  if (n >= LEARN_MIN_OBSERVATIONS) {
-    const rate = source.agree_count / n;
-    if (rate >= 0.9) tier = step(tier, -1);
-    else if (rate <= 0.5) tier = step(tier, +1);
-  }
-  return tier;
+  let kind = (source.publisher_kind ?? "unknown").toLowerCase();
+  if (!(kind in LADDER)) kind = "unknown";
+  if (aboutPublisher && (kind === "independent" || kind === "unknown")) kind = "self";
+  if (kind === "self" && !aboutPublisher) kind = "independent";
+  return LADDER[kind] ?? "E";
 }

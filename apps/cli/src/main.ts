@@ -5,12 +5,12 @@ import { readFileSync } from "node:fs";
 import { registry, getPolicy, env, uuidv7 } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
-  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourceClassification, getEvidencePriors,
+  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourcePublisher,
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256 } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, classifySource, judgePair, type Side } from "@worldgraph/extract";
-import { resolveTier, runOriginClustering, rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, type Side } from "@worldgraph/extract";
+import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
 const flags = parseArgs({
@@ -43,9 +43,7 @@ async function main() {
     case "proposed": return proposed(sub ?? s("inv"));
     case "sql": return sql([sub, ...rest].filter(Boolean).join(" "));
     case "ontology": return ontology(sub);
-    case "cluster": return cluster(sub ?? s("inv"));
     case "rebuild": return rebuildCmd(sub ?? s("inv"));
-    case "classify": return classify(sub ?? s("inv"));
     case "candidates": return candidates(sub ?? s("inv"));
     case "decide": return decide(sub ?? s("inv"), rest[0], rest[1], rest[2]);
     case "unmerge": return unmerge(sub ?? s("inv"), rest[0]);
@@ -83,9 +81,7 @@ async function main() {
   wg proposed <inv>              "other" types/predicates by frequency
   wg models
   wg ontology [predicates|types|keys]   the registry as the extractor sees it
-  wg cluster <inv>               recompute origin clusters (independent sources per fact)
   wg rebuild <inv>               claims → entities, links, attributes (graded), slots
-  wg classify <inv>              classify unclassified sources (doc kind, publisher, self-published)
   wg merges <inv>                entities assembled from several names; related-not-merged pairs
   wg candidates <inv>            open identity hypotheses (the uncertain band)
   wg decide <inv> <a> <b> same|not_same|related:<kind>
@@ -133,7 +129,6 @@ async function investigate() {
   }
   await setInvestigationStatus(inv.id, "running");
   const blobs = new FsBlobStore();
-  const tierRows = await getTierRows();
   const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model, policy, registry: reg, log: (m: string) => console.log(m) };
   const totals = { sources: 0, fetched: 0, failed: 0, relations: 0, attributes: 0, rejected: 0, fuzzy: 0, other: 0, usd: 0, rejectReasons: {} as Record<string, number> };
   console.log(`model: ${model.label} · policy: ${policy.name} · ${urlList.length} urls\n`);
@@ -160,15 +155,13 @@ async function investigate() {
           blobs.put(key, r.raw);
           const snapKey = r.rendered ? blobKey(inv.id, hash, "snapshot.html") : null;
           if (snapKey && r.rendered) blobs.put(snapKey, r.rendered);
-          const t = resolveTier(safeHost(r.final_url), tierRows);
           src = await insertSource({
             investigation_id: inv.id, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status,
             content_hash: hash, blob_key: key, text: r.text, link_table: r.link_table, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null,
-            meta: { attempts: r.attempts, links: r.links.length }, family_id: t.family_id, tier: t.tier, tier_kind: t.kind, snapshot_key: snapKey, captured_at: new Date(),
+            meta: { attempts: r.attempts, links: r.links.length }, family_id: null, tier: null, tier_kind: null, snapshot_key: snapKey, captured_at: new Date(),
           });
           totals.fetched++;
-          try { const { c } = await classifySource({ url: r.final_url, title: r.title, text: r.text }); await setSourceClassification(src.id, c); console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · ${c.doc_kind}${c.self_published ? " (self-published)" : ""} by ${c.publisher_name || "?"} · "${(r.title ?? "").slice(0, 50)}"`); }
-          catch (e) { console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · (classification failed: ${String((e as Error).message).slice(0, 60)})`); }
+          console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · "${(r.title ?? "").slice(0, 50)}"`);
         }
       } catch (e) {
         totals.failed++;
@@ -181,12 +174,11 @@ async function investigate() {
     if (!src?.text) continue;
     const sum = await extractSource(ctx, src);
     if (sum.chunks && sum.skipped === sum.chunks) console.log(`         (already extracted with ${model.label})`);
+    if (sum.publisher_name) await setSourcePublisher(src.id, sum.publisher_name, sum.publisher_kind ?? "unknown");
     await updateSourceStatus(src.id, "extracted");
     totals.relations += sum.relations; totals.attributes += sum.attributes; totals.rejected += sum.rejected; totals.fuzzy += sum.fuzzy; totals.other += sum.candidates; totals.usd += sum.usd;
     for (const [k, v] of Object.entries(sum.rejectReasons)) totals.rejectReasons[k] = (totals.rejectReasons[k] ?? 0) + v;
   }
-  const oc = await runOriginClustering(inv.id);
-  console.log(`\norigins: ${oc.claims} claims → ${oc.clusters} origin clusters over ${oc.facts} facts (${oc.multiOrigin} facts with ≥2 independent origins)`);
   await setInvestigationStatus(inv.id, "done");
   await audit({ investigation_id: inv.id, actor: "cli", action: "investigate.run", detail: { model: model.id, urls: urlList.length, ...totals } });
   const kept = totals.relations + totals.attributes;
@@ -206,21 +198,8 @@ async function ontology(which?: string) {
 registry hash ${reg.hash} · ${reg.extractablePredicates.length} extractable predicates · ${reg.nodeTypeNames.length} node types · ${reg.attributeKeyNames.length} attribute keys`);
 }
 
-async function cluster(id?: string) {
-  const inv = id ? await getInvestigation(id) : null;
-  if (!inv) return fail("wg cluster <inv>");
-  const oc = await runOriginClustering(inv.id);
-  console.log(`${oc.claims} claims → ${oc.clusters} origin clusters over ${oc.facts} facts · ${oc.multiOrigin} facts with ≥2 independent origins`);
-  const top = await query<{ fact: string; origins: string; claims: string }>(
-    `SELECT (subject->>'name') || ' —' || predicate || '→ ' || (object->>'name') fact, count(distinct origin_cluster_id) origins, count(*) claims
-       FROM relation_claims WHERE investigation_id=$1 AND status='raw' GROUP BY 1 HAVING count(*) > 1 ORDER BY origins DESC, claims DESC LIMIT 12`, [inv.id]);
-  for (const t of top) console.log(`  ${String(t.origins).padStart(2)} origins / ${String(t.claims).padStart(2)} claims  ${t.fact}`);
-}
-
 async function tiers(pattern?: string, tier?: string) {
   if (pattern && tier) { await setTier(pattern, tier.toUpperCase(), null, null); console.log(`override: ${pattern} → ${tier.toUpperCase()}`); }
-  console.log("evidence priors (by document kind; learned counts adjust them):");
-  for (const [k, t] of Object.entries(await getEvidencePriors())) console.log(`  ${t}  ${k}`);
   const ov = await getTierRows();
   console.log(ov.length ? "owner overrides:" : "owner overrides: none");
   for (const r of ov) console.log(`  ${r.tier}  ${r.pattern}`);
@@ -305,20 +284,6 @@ async function gaps(id?: string) {
 async function rulesCmd(sub?: string) {
   if (sub === "sync") { const n = await syncRules(); console.log(`synced ${n} rules`); return; }
   for (const r of loadRuleFiles()) console.log(`${r.kind.padEnd(16)} ${r.id.padEnd(40)} ${r.name}`);
-}
-
-async function classify(id?: string) {
-  const inv = id ? await getInvestigation(id) : null;
-  if (!inv) return fail("wg classify <inv>");
-  const rows = await query<{ id: string; url: string; title: string | null; text: string }>(`SELECT id, coalesce(final_url, url) url, title, text FROM sources WHERE investigation_id=$1 AND text IS NOT NULL AND classified_at IS NULL`, [inv.id]);
-  let usd = 0;
-  for (const r of rows) {
-    const { c, usd: u } = await classifySource({ url: r.url, title: r.title, text: r.text });
-    usd += u;
-    await setSourceClassification(r.id, c);
-    console.log(`${short(r.id)}  ${c.doc_kind.padEnd(11)} ${(c.self_published ? "self" : "").padEnd(5)} pub=${c.publisher_name.slice(0, 28).padEnd(28)} about=${c.about.slice(0, 24).padEnd(24)} ${r.url.slice(0, 60)}`);
-  }
-  console.log(`classified ${rows.length} sources · $${usd.toFixed(4)}`);
 }
 
 async function candidates(id?: string) {

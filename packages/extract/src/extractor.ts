@@ -22,7 +22,7 @@ const OutputSchema = z.object({
   mentions: z.array(z.object({ ref: z.string(), surface: z.string(), name: z.string(), type: z.string(), type_label: z.string().default(""), type_parent: z.string().default(""), kind: z.string().default(""), hints: KV })).default([]),
   relations: z.array(z.object({ subject: z.string(), predicate: z.string(), candidate_label: z.string().default(""), candidate_parent: z.string().default(""), object: z.string(), qualifiers: KV, quote: z.string(), confidence: z.number().min(0).max(1).catch(0.5), attribute_class: AttrClass, ...TimeShape })).default([]),
   attributes: z.array(z.object({ entity: z.string(), key: z.string(), key_parent: z.string().default(""), value: z.string(), datatype: z.enum(DATATYPES).catch("string"), quote: z.string(), confidence: z.number().min(0).max(1).catch(0.5), attribute_class: AttrClass, ...TimeShape })).default([]),
-  page: z.object({ published_at: z.string().default(""), summary: z.string().default("") }).default({ published_at: "", summary: "" }),
+  page: z.object({ published_at: z.string().default(""), summary: z.string().default(""), publisher_name: z.string().default(""), publisher_kind: z.string().default("") }).default({ published_at: "", summary: "", publisher_name: "", publisher_kind: "" }),
 });
 
 export interface ExtractContext {
@@ -35,6 +35,7 @@ export interface ExtractContext {
 
 export interface ExtractSummary {
   chunks: number; skipped: number; relations: number; attributes: number; rejected: number; redacted: number;
+  publisher_name?: string; publisher_kind?: string;
   fuzzy: number; candidates: number; derived: number; usd: number; ms: number; rejectReasons: Record<string, number>;
 }
 
@@ -78,6 +79,7 @@ export async function extractSource(ctx: ExtractContext, source: SourceRow): Pro
       await insertClaimsAndExtraction([], { ...base, status: "failed", error: msg, in_tokens: llm.inTok, out_tokens: llm.outTok, usd: llm.usd, ms: llm.ms });
       continue;
     }
+    if (!sum.publisher_name && parsed.page.publisher_name) { sum.publisher_name = parsed.page.publisher_name; sum.publisher_kind = parsed.page.publisher_kind || "unknown"; }
     const assertedAt = pageDate ?? parseEdtf(parsed.page.published_at)?.lo ?? null;
     const { claims, stats } = buildClaims(ctx, source, chunk, parsed, pv, llm.usd, seen, assertedAt);
     for (const [k, v] of Object.entries(stats.rejectReasons)) sum.rejectReasons[k] = (sum.rejectReasons[k] ?? 0) + v;

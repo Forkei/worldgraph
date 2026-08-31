@@ -52,12 +52,11 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
       );
     }
   }
-  const priors = Object.fromEntries((await query<{ doc_kind: string; tier: string }>(`SELECT doc_kind, tier FROM evidence_priors`)).map((r) => [r.doc_kind, r.tier]));
   const overrides = new Map((await query<{ pattern: string; tier: string }>(`SELECT pattern, tier FROM source_tiers`)).map((r) => [r.pattern, r.tier]));
   const srcFacts = new Map<string, SourceFacts & { domain: string | null; publisher_name: string | null }>();
-  for (const srow of await query<{ id: string; domain: string | null; doc_kind: string | null; self_published: boolean | null; publisher_name: string | null; agree_count: number; contradict_count: number }>(`SELECT id, domain, doc_kind, self_published, publisher_name, agree_count, contradict_count FROM sources WHERE investigation_id=$1`, [investigationId])) {
+  for (const srow of await query<{ id: string; domain: string | null; publisher_kind: string | null; publisher_name: string | null }>(`SELECT id, domain, publisher_kind, publisher_name FROM sources WHERE investigation_id=$1`, [investigationId])) {
     const ov = [...overrides.entries()].find(([p]) => srow.domain && (srow.domain === p || srow.domain.endsWith("." + p)))?.[1] ?? null;
-    srcFacts.set(srow.id, { doc_kind: srow.doc_kind, self_published: srow.self_published, publisher_entity_id: null, agree_count: srow.agree_count, contradict_count: srow.contradict_count, override_tier: ov, domain: srow.domain, publisher_name: srow.publisher_name });
+    srcFacts.set(srow.id, { publisher_kind: srow.publisher_kind, publisher_entity_id: null, override_tier: ov, domain: srow.domain, publisher_name: srow.publisher_name });
   }
   const rows = await query<ClaimRow>(
     `SELECT c.id, 'relation' AS kind, c.source_id, s.tier, c.origin_cluster_id AS origin, c.span_method, c.subject, c.object, NULL::jsonb AS entity,
@@ -157,9 +156,13 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     if (!f) return r.tier ?? "F";
     const ents2 = r.kind === "relation" ? [relMap.get(r.id)!.src, relMap.get(r.id)!.dst] : [attrMap.get(r.id)!];
     const about = !!f.publisher_entity_id && (ents2.includes(f.publisher_entity_id) || ents2.some((e) => memberOfPublisher.has(`${e}|${f.publisher_entity_id}`)));
-    return tierForClaim(f, priors, about);
+    return tierForClaim(f, about);
   };
   for (const r of rows) r.tier = tierOf(r);
+  // independence is provenance, not text shape (model v0.4 §1.4): claims of one fact from the same publisher
+  // entity are ONE origin; different publishers are independent origins. Falls back to the source when the
+  // publisher is not yet resolved to an entity.
+  const originKey = (r: ClaimRow): string => srcFacts.get(r.source_id)?.publisher_entity_id ?? r.source_id;
 
   // 2. links and attributes with evidence profiles
   interface Agg { ids: string[]; origins: Map<string, string>; tiers: string[]; fuzzy: number; rows: ClaimRow[] }
@@ -181,7 +184,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     const k = `${src}|${r.predicate}|${r.predicate_specific ?? ""}|${dst}`;
     let g = linkAgg.get(k);
     if (!g) { g = { ids: [], origins: new Map(), tiers: [], fuzzy: 0, rows: [], src, dst, predicate: r.predicate!, specific: r.predicate_specific }; linkAgg.set(k, g); }
-    g.ids.push(r.id); g.origins.set(r.origin ?? r.id, r.tier ?? "F"); g.tiers.push(r.tier ?? "F"); if (r.span_method === "fuzzy") g.fuzzy++; g.rows.push(r);
+    g.ids.push(r.id); g.origins.set(originKey(r), r.tier ?? "F"); g.tiers.push(r.tier ?? "F"); if (r.span_method === "fuzzy") g.fuzzy++; g.rows.push(r);
   }
   const attrAgg = new Map<string, Agg & { entity: string; key: string; specific: string | null; value: string; value_norm: string; datatype: string }>();
   const perEntityKeyValues = new Map<string, Set<string>>();
@@ -190,7 +193,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     const k = `${e}|${a.key}|${a.key_specific ?? ""}|${a.value_norm}`;
     let g = attrAgg.get(k);
     if (!g) { g = { ids: [], origins: new Map(), tiers: [], fuzzy: 0, rows: [], entity: e, key: a.key!, specific: a.key_specific, value: a.value!, value_norm: a.value_norm!, datatype: a.datatype! }; attrAgg.set(k, g); }
-    g.ids.push(a.id); g.origins.set(a.origin ?? a.id, a.tier ?? "F"); g.tiers.push(a.tier ?? "F"); if (a.span_method === "fuzzy") g.fuzzy++; g.rows.push(a);
+    g.ids.push(a.id); g.origins.set(originKey(a), a.tier ?? "F"); g.tiers.push(a.tier ?? "F"); if (a.span_method === "fuzzy") g.fuzzy++; g.rows.push(a);
     const ek = `${e}|${a.key}`; (perEntityKeyValues.get(ek) ?? perEntityKeyValues.set(ek, new Set()).get(ek)!).add(a.value_norm!);
   }
 
@@ -214,7 +217,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
          ON CONFLICT (id) DO UPDATE SET type=EXCLUDED.type, kind=EXCLUDED.kind, canonical_name=EXCLUDED.canonical_name, aliases=EXCLUDED.aliases, identity_keys=EXCLUDED.identity_keys, claim_count=EXCLUDED.claim_count, first_seen=EXCLUDED.first_seen, last_seen=EXCLUDED.last_seen, built_at=now()`,
         [e.id, investigationId, e.type, e.kind, canonical, nameNorm(canonical, e.type) || "unnamed", [...e.aliases], JSON.stringify(Object.fromEntries(Object.entries(e.keys).map(([k, v]) => [k, [...v]]))), e.claims.size, e.first, e.last],
       );
-      await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('entity',$1,$2)`, [e.id, JSON.stringify([...e.claims].map((id) => ({ kind: "claim", id })))]);
+      await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('entity',$1,$2) ON CONFLICT (derived_kind, derived_id) DO UPDATE SET supports=EXCLUDED.supports, status='in'`, [e.id, JSON.stringify([...e.claims].map((id) => ({ kind: "claim", id })))]);
     }
     for (const ce of claimEnts) await c.query(`INSERT INTO claim_entities (claim_id, claim_kind, role, entity_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [ce.claim_id, ce.claim_kind, ce.role, ce.entity_id]);
     // membership (the un-merge path) + slots that belonged to a now-merged provisional entity move to the canonical one
@@ -280,7 +283,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
         [id, investigationId, g.src, g.predicate, g.specific, g.dst, JSON.stringify(quals), JSON.stringify(conflicts), g.ids, p.evidence_count, p.independent_origins, p.primary_origins, p.tier_best, false, gr.reliability, gr.credibility, gr.grade,
           t.temporal_kind, t.valid_from_lo, t.valid_from_hi, t.valid_to_lo, t.valid_to_hi, t.date_lo, t.date_hi, t.first_asserted, t.last_asserted],
       );
-      await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('link',$1,$2)`, [id, JSON.stringify([...g.ids.map((cid) => ({ kind: "claim", id: cid })), ...[...g.origins.keys()].map((o) => ({ kind: "origin", id: o }))])]);
+      await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('link',$1,$2) ON CONFLICT (derived_kind, derived_id) DO UPDATE SET supports=EXCLUDED.supports, status='in'`, [id, JSON.stringify([...g.ids.map((cid) => ({ kind: "claim", id: cid })), ...[...g.origins.keys()].map((o) => ({ kind: "origin", id: o }))])]);
       byGrade[gr.grade] = (byGrade[gr.grade] ?? 0) + 1;
       (entityPreds.get(g.src) ?? entityPreds.set(g.src, new Set()).get(g.src)!).add(g.predicate);
       if (g.predicate === "located_in" || g.predicate === "works_at" || g.predicate === "member_of" || g.predicate === "board_member") {
@@ -299,7 +302,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
         [id, investigationId, g.entity, g.key, g.specific, g.value, g.value_norm, g.datatype, g.ids, p.evidence_count, p.independent_origins, p.primary_origins, p.tier_best, contested, gr.reliability, gr.credibility, gr.grade,
           t.temporal_kind, t.valid_from_lo, t.valid_from_hi, t.valid_to_lo, t.valid_to_hi, t.date_lo, t.date_hi, t.first_asserted, t.last_asserted],
       );
-      await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('attribute',$1,$2)`, [id, JSON.stringify([...g.ids.map((cid) => ({ kind: "claim", id: cid })), ...[...g.origins.keys()].map((o) => ({ kind: "origin", id: o }))])]);
+      await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('attribute',$1,$2) ON CONFLICT (derived_kind, derived_id) DO UPDATE SET supports=EXCLUDED.supports, status='in'`, [id, JSON.stringify([...g.ids.map((cid) => ({ kind: "claim", id: cid })), ...[...g.origins.keys()].map((o) => ({ kind: "origin", id: o }))])]);
       byGrade[gr.grade] = (byGrade[gr.grade] ?? 0) + 1;
       (entityAttrs.get(g.entity) ?? entityAttrs.set(g.entity, new Set()).get(g.entity)!).add(g.key);
     }
