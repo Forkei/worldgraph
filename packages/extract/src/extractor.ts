@@ -200,3 +200,32 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
     claims.push(claim);
   }
 }
+
+/** Extract a source to claims WITHOUT inserting them — for agent staging (read_url → the agent chooses which
+ *  to contribute). Returns raw-status claims plus the page's publisher meta. The caller commits via
+ *  insertClaimsAndExtraction (or discards). */
+export async function extractClaimsOnly(ctx: ExtractContext, source: SourceRow): Promise<{ claims: (RelationClaim | AttributeClaim)[]; usd: number; publisher_name?: string; publisher_kind?: string }> {
+  if (!source.text) return { claims: [], usd: 0 };
+  const chunks = chunkText(source.text);
+  const system = [systemPrompt(ctx.registry), contextBlock(ctx.investigation)];
+  const pv = promptVersion(ctx.registry);
+  const schema = ctx.registry.extractionJsonSchema();
+  const pageDate = source.published_at ? source.published_at.toISOString().slice(0, 10) : null;
+  const seen = new Set<string>();
+  const all: (RelationClaim | AttributeClaim)[] = [];
+  let usd = 0, publisher_name: string | undefined, publisher_kind: string | undefined;
+  for (const chunk of chunks) {
+    const page = { url: source.final_url ?? source.url, title: source.title, published_at: pageDate, chunk_index: chunk.index, chunk_count: chunks.length };
+    let llm;
+    try { llm = await callModel(ctx.model, { system, user: userPrompt(page, chunk.text), schema }); }
+    catch { continue; }
+    usd += llm.usd;
+    let parsed: ExtractionOutput;
+    try { parsed = OutputSchema.parse(JSON.parse(llm.text)) as ExtractionOutput; } catch { continue; }
+    if (!publisher_name && parsed.page.publisher_name) { publisher_name = parsed.page.publisher_name; publisher_kind = parsed.page.publisher_kind || "unknown"; }
+    const assertedAt = pageDate ?? parseEdtf(parsed.page.published_at)?.lo ?? null;
+    const { claims } = buildClaims(ctx, source, chunk, parsed, pv, llm.usd, seen, assertedAt);
+    for (const c of claims) if (c.status === "raw") all.push(c);
+  }
+  return { claims: all, usd, publisher_name, publisher_kind };
+}

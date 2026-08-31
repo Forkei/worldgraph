@@ -110,3 +110,49 @@ async function callGemini(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmResult
 }
 
 export const hasKeyFor = (m: ModelSpec): boolean => (m.provider === "anthropic" ? !!env.anthropicKey : !!env.geminiKey);
+
+// ---- tool-use loop (for mission agents): multi-turn Anthropic tool use ----
+export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown> }
+export interface ToolLoopResult { finalText: string; usd: number; steps: number; toolCalls: number; transcript: { role: string; text: string }[] }
+
+/**
+ * Run an Anthropic tool-use loop: the model thinks, calls tools (executed by `exec`), sees results, repeats,
+ * until it stops calling tools or `maxSteps` is hit. Used by mission agents (plan/agent.ts).
+ */
+export async function runToolLoop(
+  m: ModelSpec,
+  opts: { system: string; user: string; tools: ToolDef[]; exec: (name: string, input: Record<string, unknown>) => Promise<string>; maxSteps?: number; onStep?: (note: string) => void },
+): Promise<ToolLoopResult> {
+  if (m.provider !== "anthropic") throw new Error("runToolLoop currently supports Anthropic models only");
+  anthropicClient ??= new Anthropic({ apiKey: requireEnv("anthropicKey") });
+  const maxSteps = opts.maxSteps ?? 24;
+  const messages: { role: "user" | "assistant"; content: unknown }[] = [{ role: "user", content: opts.user }];
+  const transcript: { role: string; text: string }[] = [];
+  let usd = 0, toolCalls = 0, step = 0;
+  for (; step < maxSteps; step++) {
+    const res = await anthropicClient.messages.stream({
+      model: m.id, max_tokens: 8000,
+      system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
+      tools: opts.tools as never, messages: messages as never,
+      ...(m.thinking ? { thinking: { type: "adaptive" } } : {}),
+    } as never).finalMessage();
+    const u = res.usage;
+    usd += costOf(m, (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0), u.output_tokens ?? 0);
+    const say = res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
+    if (say) { transcript.push({ role: "assistant", text: say }); opts.onStep?.(say); }
+    messages.push({ role: "assistant", content: res.content });
+    if (res.stop_reason !== "tool_use") return { finalText: say, usd, steps: step + 1, toolCalls, transcript };
+    const results: unknown[] = [];
+    for (const block of res.content) {
+      if (block.type !== "tool_use") continue;
+      toolCalls++;
+      const tu = block as { id: string; name: string; input: Record<string, unknown> };
+      let out: string;
+      try { out = await opts.exec(tu.name, tu.input ?? {}); }
+      catch (e) { out = "ERROR: " + String((e as Error).message).slice(0, 300); }
+      results.push({ type: "tool_result", tool_use_id: tu.id, content: out.slice(0, 12_000) });
+    }
+    messages.push({ role: "user", content: results });
+  }
+  return { finalText: "(stopped: max steps reached)", usd, steps: step, toolCalls, transcript };
+}

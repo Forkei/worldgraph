@@ -5,11 +5,11 @@ import { readFileSync } from "node:fs";
 import { registry, getPolicy, env, uuidv7 } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
-  findSourceByUrl, findSourceByHash, insertSource, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourcePublisher, syncCapabilities, listCapabilities, getCachedSearch, putCachedSearch,
+  findSourceByUrl, findSourceByHash, insertSource, insertClaimsBatch, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourcePublisher, syncCapabilities, listCapabilities, getCachedSearch, putCachedSearch,
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, type Side } from "@worldgraph/extract";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, type Side } from "@worldgraph/extract";
 import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
@@ -24,7 +24,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -319,6 +319,97 @@ async function dispatch(id?: string) {
   return drafts;
 }
 
+interface Staged { source: SourceRow; claims: (import("@worldgraph/core").RelationClaim | import("@worldgraph/core").AttributeClaim)[] }
+
+// A mission agent (M2 step 4): given an objective, it drives its own tool loop — search, choose URLs to read,
+// see the proposed claims, and contribute the ones it trusts (curation happens before anything enters the
+// graph). Fixes/deletes are retract_source + challenge, never a raw delete. Returns a verdict + trail.
+async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInvestigation>>>, ctx: Parameters<typeof extractSource>[0], blobs: FsBlobStore, mission: { id: string; objective: string; frontier: string[]; scope: Record<string, unknown> }, agentModel: ReturnType<typeof getModel>, per: number) {
+  const staged = new Map<string, Staged>();
+  const trail: string[] = [];
+  let contributed = 0, usd = 0;
+
+  const tools = [
+    { name: "search", description: "Search the web for pages about the mission subject. Returns ranked hits (url, title, snippet). Use specific queries; you may search several times.", input_schema: { type: "object", properties: { query: { type: "string" }, engine: { type: "string", enum: ["google", "exa"], description: "google = keyword (default), exa = semantic" } }, required: ["query"] } },
+    { name: "read_url", description: "Fetch a page and extract candidate claims from it. Returns the claims as a numbered list; nothing enters the graph until you contribute. Read pages that look relevant to the mission.", input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
+    { name: "graph_lookup", description: "Look up what the graph already knows about a named entity (so you don't re-fetch known facts).", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
+    { name: "contribute", description: "Commit chosen candidate claims from a page you read into the graph. Give the url and the indices to keep (omit indices to keep all). Only contribute claims genuinely relevant and supported.", input_schema: { type: "object", properties: { url: { type: "string" }, indices: { type: "array", items: { type: "number" } } }, required: ["url"] } },
+    { name: "finish", description: "End the mission when the objective is met or the leads are exhausted. Summarize what you found.", input_schema: { type: "object", properties: { verdict: { type: "string", enum: ["found", "partial", "no_trace"] }, summary: { type: "string" } }, required: ["verdict", "summary"] } },
+  ];
+
+  let finalVerdict = "partial", finalSummary = "";
+  const exec = async (name: string, input: Record<string, unknown>): Promise<string> => {
+    if (name === "search") {
+      const q = String(input.query ?? ""); const eng = String(input.engine ?? "google");
+      const capId = eng === "exa" ? "search.exa" : "search.serpapi.google";
+      const ck = `${capId}|${q.toLowerCase().trim()}|8`;
+      let res; const cached = await getCachedSearch(ck);
+      if (cached) res = cached.result as import("@worldgraph/acquire").SearchResult;
+      else { res = eng === "exa" ? await exaSearch(q, { num: 8 }) : await serpApiSearch(q, { num: 8 }); usd += res.usd; await putCachedSearch(ck, capId, { q, num: 8 }, res, "7 days"); }
+      if (!res.hits.length) return "no results";
+      return res.hits.map((h) => `${h.rank}. ${h.url}\n   ${h.title ?? ""}${h.snippet ? " — " + h.snippet.replace(/\s+/g, " ").slice(0, 140) : ""}`).join("\n");
+    }
+    if (name === "read_url") {
+      const url = String(input.url ?? "");
+      if (staged.has(url)) { const st = staged.get(url)!; return summarizeStaged(url, st); }
+      const existing = await findSourceByUrl(inv.id, url);
+      if (existing && existing.status === "failed") return "that page failed to fetch earlier; try another";
+      let src = existing;
+      if (!src) {
+        try {
+          const r = await fetchUrl(url);
+          const hash = sha256(r.text); const dup = await findSourceByHash(inv.id, hash);
+          if (dup) src = dup; else {
+            const key = blobKey(inv.id, hash, r.raw_ext); blobs.put(key, r.raw);
+            const snapKey = r.rendered ? blobKey(inv.id, hash, "snapshot.html") : null; if (snapKey && r.rendered) blobs.put(snapKey, r.rendered);
+            src = await insertSource({ investigation_id: inv.id, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status, content_hash: hash, blob_key: key, text: r.text, link_table: r.link_table, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null, meta: { attempts: r.attempts, links: r.links.length }, family_id: null, tier: null, tier_kind: null, snapshot_key: snapKey, captured_at: new Date() });
+          }
+        } catch (e) { return "could not fetch: " + String((e as Error).message).slice(0, 120); }
+      }
+      if (!src.text) return "page had no readable text";
+      const { claims, usd: u, publisher_name, publisher_kind } = await extractClaimsOnly(ctx, src);
+      usd += u;
+      if (publisher_name) await setSourcePublisher(src.id, publisher_name, publisher_kind ?? "unknown");
+      staged.set(url, { source: src, claims });
+      trail.push(url);
+      return summarizeStaged(url, { source: src, claims });
+    }
+    if (name === "graph_lookup") {
+      const g2 = await loadGraph(inv.id);
+      const n = [...g2.entities.values()].find((e) => e.name.toLowerCase() === String(input.name ?? "").toLowerCase());
+      if (!n) return `"${input.name}" is not in the graph yet`;
+      const sub = ego(g2, n.id, 1, { limit: 20 });
+      return `${n.name} [${n.type}] — ${n.claim_count} claims:\n` + sub.links.slice(0, 15).map((l) => `  ${g2.entities.get(l.src)?.name} —${l.predicate}→ ${g2.entities.get(l.dst)?.name} (${l.grade})`).join("\n");
+    }
+    if (name === "contribute") {
+      const url = String(input.url ?? ""); const st = staged.get(url);
+      if (!st) return "read that url first";
+      const idx = Array.isArray(input.indices) ? new Set((input.indices as number[]).map(Number)) : null;
+      const pick = idx ? st.claims.filter((_, i) => idx.has(i)) : st.claims;
+      await insertClaimsBatch(pick);
+      await updateSourceStatus(st.source.id, "extracted");
+      contributed += pick.length;
+      return `committed ${pick.length} claim${pick.length === 1 ? "" : "s"} from ${safeHost(st.source.final_url ?? url)}`;
+    }
+    if (name === "finish") { finalVerdict = String(input.verdict ?? "partial"); finalSummary = String(input.summary ?? ""); return "ok"; }
+    return "unknown tool";
+  };
+
+  const system = `You are an OSINT mission agent working one lead for a larger investigation. Objective:\n\n${mission.objective}\n\nWork the objective and nothing else. Use search to find pages, read_url to inspect the promising ones (you choose which — do not read everything), and contribute only the claims that are relevant to THIS objective and clearly supported. Check graph_lookup before chasing something that may already be known. Read at most about ${per + 2} pages. When the objective is met or leads run out, call finish. Do not invent facts; every claim comes from a page you read.`;
+  const r = await runToolLoop(agentModel, { system, user: `Begin the mission: ${mission.objective}`, tools, exec, maxSteps: 20, onStep: (t) => { if (t) console.log("   · " + t.replace(/\s+/g, " ").slice(0, 150)); } });
+  usd += r.usd;
+  return { verdict: finalVerdict, summary: finalSummary || r.finalText, trail, contributed, usd };
+}
+
+function summarizeStaged(url: string, st: Staged): string {
+  if (!st.claims.length) return `read ${url} — no extractable claims`;
+  const lines = st.claims.slice(0, 40).map((c, i) => {
+    if (c.kind === "relation") return `[${i}] ${c.subject.name} —${c.predicate}→ ${c.object.name}`;
+    return `[${i}] ${c.entity.name} · ${c.key} = ${c.value}`;
+  });
+  return `read ${url} — ${st.claims.length} candidate claims:\n${lines.join("\n")}\n(contribute the indices worth keeping)`;
+}
+
 async function runLoop(id?: string) {
   const inv = id ? await getInvestigation(id) : null;
   if (!inv) return fail('wg run <inv> [--max 5] [--per 3] [--model <m>]');
@@ -332,22 +423,31 @@ async function runLoop(id?: string) {
   if (!missions.length) return console.log("\nno open missions — the graph already satisfies the question's indicators");
   console.log(`\nrunning top ${missions.length} missions (${per} pages each) …\n`);
   let fetched = 0, spent = 0;
+  const agentModel = getModel(s("agent-model") ?? "haiku-4-5");
+  const useAgent = !b("scripted") && hasKeyFor(agentModel);
   for (const m of missions) {
     await setMissionState(m.id, "running");
-    const query0 = m.frontier[0] ?? "";
-    console.log(`▸ ${m.objective}`);
-    let got = 0; const trail: string[] = [];
-    try {
-      const res = await serpApiSearch(query0, { num: 8 }); spent += res.usd;
-      for (const h of res.hits.slice(0, per)) {
-        const existing = await findSourceByUrl(inv.id, h.url);
-        if (existing && existing.status !== "failed") continue;
-        const r = await ingestUrl(inv.id, ctx, blobs, h.url, null);
-        if (r.status === "fetched") { fetched++; got++; trail.push(h.url); if (r.sum) spent += r.sum.usd; }
-      }
-    } catch (e) { console.log(`   (search failed: ${String((e as Error).message).slice(0, 80)})`); }
-    await setMissionState(m.id, "done", got ? "found" : "no_trace", trail);
-    console.log(`   ${got} new page${got === 1 ? "" : "s"} ingested`);
+    console.log(`
+▸ ${m.objective}`);
+    if (useAgent) {
+      const res = await runAgentMission(inv, ctx, blobs, m, agentModel, per);
+      spent += res.usd; fetched += res.trail.length;
+      await setMissionState(m.id, "done", res.verdict, res.trail);
+      console.log(`   → ${res.verdict}: contributed ${res.contributed} claims from ${res.trail.length} pages · $${res.usd.toFixed(3)}`);
+    } else {
+      const query0 = m.frontier[0] ?? ""; let got = 0; const trail: string[] = [];
+      try {
+        const res = await serpApiSearch(query0, { num: 8 }); spent += res.usd;
+        for (const h of res.hits.slice(0, per)) {
+          const existing = await findSourceByUrl(inv.id, h.url);
+          if (existing && existing.status !== "failed") continue;
+          const r = await ingestUrl(inv.id, ctx, blobs, h.url, null);
+          if (r.status === "fetched") { fetched++; got++; trail.push(h.url); if (r.sum) spent += r.sum.usd; }
+        }
+      } catch (e) { console.log(`   (search failed: ${String((e as Error).message).slice(0, 80)})`); }
+      await setMissionState(m.id, "done", got ? "found" : "no_trace", trail);
+      console.log(`   ${got} new pages ingested`);
+    }
   }
   console.log(`\ningested ${fetched} pages · $${spent.toFixed(3)} · rebuilding …`);
   await rebuildCmd(inv.id);

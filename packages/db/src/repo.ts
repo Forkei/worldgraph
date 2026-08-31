@@ -91,6 +91,13 @@ export interface ExtractionStats {
   in_tokens: number; out_tokens: number; usd: number; ms: number; error: string | null; page_summary: string | null;
 }
 
+export async function insertClaimsBatch(claims: (RelationClaim | AttributeClaim)[]): Promise<void> {
+  if (!claims.length) return;
+  const c = await getPool().connect();
+  try { await c.query("BEGIN"); for (const cl of claims) await insertClaim(c, cl); await c.query("COMMIT"); }
+  catch (e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); }
+}
+
 export async function insertClaimsAndExtraction(claims: (RelationClaim | AttributeClaim)[], ex: ExtractionStats): Promise<void> {
   const c = await getPool().connect();
   try {
