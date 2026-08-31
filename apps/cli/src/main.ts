@@ -9,7 +9,7 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, type Side } from "@worldgraph/extract";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, type Side } from "@worldgraph/extract";
 import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
@@ -24,7 +24,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -39,6 +39,7 @@ async function main() {
     case "investigate": return investigate();
     case "search": return search(sub ?? s("inv"), ...rest);
     case "question": return question(sub ?? s("inv"), ...rest);
+    case "audit": return auditCmd(sub ?? s("inv"));
     case "dispatch": return void (await dispatch(sub ?? s("inv")));
     case "run": return runLoop(sub ?? s("inv"));
     case "capabilities": case "caps": return capabilitiesCmd();
@@ -94,6 +95,7 @@ async function main() {
   wg models
   wg ontology [predicates|types|keys]   the registry as the extractor sees it
   wg rebuild <inv>               claims → entities, links, attributes (graded), slots
+  wg audit <inv> [--n 40]        measure extraction precision (does each claim's quote support it?)
   wg merges <inv>                entities assembled from several names; related-not-merged pairs
   wg candidates <inv>            open identity hypotheses (the uncertain band)
   wg decide <inv> <a> <b> same|not_same|related:<kind>
@@ -464,7 +466,45 @@ async function runLoop(id?: string) {
   console.log(`wg dossier ${short(inv.id)} "${inv.seed.name}"`);
 }
 
+async function auditCmd(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg audit <inv> [--n 40]  — measure extraction precision (does each claim's quote support it?)");
+  const n = Number(s("n") ?? 40);
+  const rows = await query<{ id: string; text: string; quote: string; kind: string }>(
+    `SELECT id, kind, text, quote FROM (
+       SELECT id, 'relation' kind, subject->>'name' || ' —' || predicate || '→ ' || (object->>'name') || coalesce(' {' || (qualifiers::text) || '}','') text, quote FROM relation_claims WHERE investigation_id=$1 AND status='raw'
+       UNION ALL
+       SELECT id, 'attribute', (entity->>'name') || ' · ' || key || ' = ' || value, quote FROM attribute_claims WHERE investigation_id=$1 AND status='raw'
+     ) c ORDER BY random() LIMIT $2`, [inv.id, n]);
+  if (!rows.length) return fail("no claims to audit");
+  const model = getModel("gemini-3.5-flash-lite");
+  const schema = { type: "object", properties: { verdicts: { type: "array", items: { type: "object", properties: {
+    i: { type: "number" }, verdict: { type: "string", enum: ["supported", "partial", "unsupported"] }, why: { type: "string" },
+  }, required: ["i", "verdict", "why"], additionalProperties: false } } }, required: ["verdicts"], additionalProperties: false };
+  const sys = ["You audit an extractor. For each item you get a CLAIM and the verbatim QUOTE it was extracted from. Decide if the quote SUPPORTS the claim: 'supported' (the quote clearly states it), 'partial' (the quote is related but the claim adds or bends something), 'unsupported' (the quote does not back the claim). Judge only from the quote."];
+  const results: { i: number; verdict: string; why: string }[] = [];
+  let usd = 0;
+  for (let off = 0; off < rows.length; off += 12) {
+    const batch = rows.slice(off, off + 12);
+    const user = batch.map((r, j) => `[${off + j}] CLAIM: ${r.text}\n     QUOTE: "${(r.quote ?? "").replace(/\s+/g, " ").slice(0, 300)}"`).join("\n\n");
+    try { const r = await callModel(model, { system: sys, user, schema }); usd += r.usd; results.push(...(JSON.parse(r.text).verdicts ?? [])); }
+    catch (e) { console.log(`(batch failed: ${String((e as Error).message).slice(0, 80)})`); }
+  }
+  const by: Record<string, number> = { supported: 0, partial: 0, unsupported: 0 };
+  for (const v of results) by[v.verdict] = (by[v.verdict] ?? 0) + 1;
+  const total = results.length || 1;
+  const precision = (by.supported! + 0.5 * by.partial!) / total;
+  console.log(`\nextraction precision on ${results.length} sampled claims: ${(precision * 100).toFixed(1)}%`);
+  console.log(`  supported ${by.supported} · partial ${by.partial} · unsupported ${by.unsupported}  ($${usd.toFixed(4)})`);
+  const bad = results.filter((v) => v.verdict === "unsupported").slice(0, 12);
+  if (bad.length) {
+    console.log(`\nunsupported samples:`);
+    for (const v of bad) { const r = rows[v.i]; if (r) console.log(`  ✗ ${r.text.slice(0, 90)}\n      quote: "${(r.quote ?? "").replace(/\s+/g, " ").slice(0, 90)}"\n      ${v.why.slice(0, 100)}`); }
+  }
+}
+
 async function ontology(which?: string) {
+
   const reg = registry();
   if (!which || which === "predicates") console.log(reg.promptGuide().split("\n\nATTRIBUTE KEYS")[0]);
   if (which === "types") for (const [k, s] of Object.entries(reg.nodeTypes)) console.log(`${k.padEnd(14)} ${s.kinds.join(", ")}`);

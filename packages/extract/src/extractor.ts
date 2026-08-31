@@ -117,9 +117,12 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
   const perItemCost = usd / Math.max(1, out.relations.length + out.attributes.length);
   const extractor = { model: ctx.model.id, prompt_version: pv, effort: ctx.model.effort ?? null, cost_usd: Number(perItemCost.toFixed(6)) };
   const refs = new Map(out.mentions.map((m) => [m.ref, m]));
+  const looksLikeHeadline = (name: string): boolean =>
+    name.split(/\s+/).length > 9 || /raises?|valued at|\$\d|announces?|\|\s*\w+$/i.test(name) || /[.:]\s/.test(name);
   const mention = (ref: string, quote: string): Mention | null => {
     const m = refs.get(ref);
     if (!m) return null;
+    if (looksLikeHeadline(m.name)) return null;   // headlines/titles are not entities (prompt rule 7)
     const rt = ctx.registry.resolveNodeType(m.type === "candidate" ? (m.type_label || "candidate") : m.type, m.type_parent || undefined);
     return { surface: m.surface, name: m.name || m.surface, type: rt.type, type_label: rt.label, kind: m.kind || null, hints: kvToRecord(m.hints), surface_in_quote: false };
   };
@@ -171,7 +174,7 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
     const ageMatch = /^(age|age_years|years_old)$/.test(a.key.trim().toLowerCase()) ? Number(String(a.value).match(/\d{1,3}/)?.[0]) : NaN;
     if (Number.isFinite(ageMatch) && assertedAt) {
       const dob = dobFromAge(ageMatch, assertedAt);
-      if (dob) { key = "date_of_birth"; specific = null; value = dob.edtf; datatype = "date"; derivation = "age_at_date"; t = { ...a, temporal_kind: "timeless", valid_from: "", valid_to: "", date: "", time_qualifier: "circa" }; stats.derived++; }
+      if (dob) { key = "date_of_birth"; specific = null; value = dob.edtf; datatype = "date"; derivation = "age_at_date"; t = { ...a, temporal_kind: "timeless", valid_from: "", valid_to: "", date: dob.edtf, time_qualifier: "circa" }; stats.derived++; }
     }
     const spec = ctx.registry.attributeKeys[key]!;
     const attrClass = maxClass(a.attribute_class, spec.attribute_class);

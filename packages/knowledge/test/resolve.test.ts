@@ -121,3 +121,16 @@ describe("identity: scores propose, only keys/decisions/owner merge (v0.4 §5)",
   });
 });
 
+
+import { identityKeysFromHints } from "../src/normalize.ts";
+describe("hint-key validation", () => {
+  it("keeps well-formed identifiers and rejects junk that would forge false matches", () => {
+    const ok = identityKeysFromHints({ email: "A@B.com", handle: "@Casey_Sample", url: "https://www.x.com/foo/", licence: "1000002" });
+    expect(ok.email).toEqual(["a@b.com"]);
+    expect(ok.handle).toEqual(["casey_sample"]);
+    expect(ok.url).toEqual(["x.com/foo"]);
+    expect(ok.licence).toEqual(["1000002"]);
+    const junk = identityKeysFromHints({ handle: "General Partner", licence: "Board Member", email: "not an email", url: "San Francisco" });
+    expect(Object.keys(junk)).toHaveLength(0);
+  });
+});

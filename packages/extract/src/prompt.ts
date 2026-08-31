@@ -29,6 +29,14 @@ Rules:
 4. confidence is 0..1 for how clearly the text supports the item (it is recorded, not used for ranking).
 5. attribute_class per the classes below; choose the more protective class when in doubt; anything identifying a minor is restricted.
 6. Tables and rosters: one relation or attribute per row; the quote is the row text.
+7. A mention is a real-world THING named in the prose — a person, org, place, work — NOT a headline, an article
+   title, a section heading, or a "related stories" link. Never create an entity whose name is a sentence or a
+   headline ("Brex valued at $2.6B", "Alder Maple raises $1.25B"). If a headline names a real entity, use
+   the entity's plain name (Brex, Alder Maple), not the headline.
+8. Attribute values are canonical and atomic: nationality as the demonym adjective ("French", "American" — not
+   "France"; dual nationality = two attributes); occupation as the ROLE only ("General Partner", "CEO"), never
+   with the employer folded in ("CEO of Applications, OpenAI" → occupation "CEO of Applications" and a separate
+   works_at OpenAI). Don't restate in an attribute what a relation already carries.
 
 ${registry.promptGuide()}`;
 }
