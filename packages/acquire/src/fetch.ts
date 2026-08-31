@@ -3,7 +3,7 @@
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import { env } from "@worldgraph/core";
-import { markdownToText } from "./markdown.ts";
+import { footnoteLinks, type LinkRef } from "./markdown.ts";
 import { rateLimit } from "./ratelimit.ts";
 
 export interface FetchResult {
@@ -20,9 +20,12 @@ export interface FetchResult {
   /** raw payload to archive in the blob store (markdown for firecrawl, html for http) */
   raw: string;
   raw_ext: "md" | "html";
-  /** rendered HTML snapshot when available (captured before extraction) */
+  /** rendered HTML snapshot when available (captured before extraction) — the audit copy */
   rendered: string | null;
+  /** raw discovered links (for pivots) */
   links: string[];
+  /** numbered link table referenced from the footnoted markdown text */
+  link_table: LinkRef[];
   attempts: { method: string; ok: boolean; note: string }[];
 }
 
@@ -91,7 +94,7 @@ async function viaFirecrawl(url: string, timeoutMs: number): Promise<FetchResult
     title: (meta.title as string) ?? null,
     published_at: pickDate(meta),
     lang: (meta.language as string) ?? null,
-    text: markdownToText(md),
+    ...footnote(md),
     raw: md,
     raw_ext: "md",
     rendered: j.data.html ?? null,
@@ -105,10 +108,10 @@ async function viaHttp(url: string, timeoutMs: number): Promise<FetchResult> {
   const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,*/*;q=0.8" }, redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
   const ct = res.headers.get("content-type") ?? "";
   if (!ct.includes("html") && !ct.includes("xml") && !ct.includes("text/plain")) {
-    return { url, final_url: res.url || url, method: "http", kind: ct.includes("pdf") ? "pdf" : "unknown", http_status: res.status, title: null, published_at: null, lang: null, text: "", raw: "", raw_ext: "html", rendered: null, links: [], attempts: [] };
+    return { url, final_url: res.url || url, method: "http", kind: ct.includes("pdf") ? "pdf" : "unknown", http_status: res.status, title: null, published_at: null, lang: null, text: "", raw: "", raw_ext: "html", rendered: null, links: [], link_table: [], attempts: [] };
   }
   const html = await res.text();
-  return { ...readable(html, res.url || url), url, method: "http", http_status: res.status, raw: html, raw_ext: "html", rendered: html, attempts: [] };
+  return { ...readable(html, res.url || url), url, method: "http", http_status: res.status, raw: html, raw_ext: "html", rendered: html, link_table: [], attempts: [] };
 }
 
 async function viaArchive(url: string, timeoutMs: number): Promise<FetchResult> {
@@ -122,10 +125,10 @@ async function viaArchive(url: string, timeoutMs: number): Promise<FetchResult> 
   const r = readable(html, url);
   const ts = snap.timestamp ?? "";
   const published = ts.length >= 8 ? `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}` : null;
-  return { ...r, url, final_url: snap.url, method: "archive", http_status: res.status, published_at: r.published_at ?? published, raw: html, raw_ext: "html", rendered: html, attempts: [] };
+  return { ...r, url, final_url: snap.url, method: "archive", http_status: res.status, published_at: r.published_at ?? published, raw: html, raw_ext: "html", rendered: html, link_table: [], attempts: [] };
 }
 
-function readable(html: string, baseUrl: string): Omit<FetchResult, "url" | "method" | "http_status" | "raw" | "raw_ext" | "rendered" | "attempts"> {
+function readable(html: string, baseUrl: string): Omit<FetchResult, "url" | "method" | "http_status" | "raw" | "raw_ext" | "rendered" | "attempts" | "link_table"> {
   const { document } = parseHTML(html);
   const links: string[] = [];
   for (const a of document.querySelectorAll("a[href]")) {
@@ -141,6 +144,8 @@ function readable(html: string, baseUrl: string): Omit<FetchResult, "url" | "met
   const text = article?.textContent ? article.textContent.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim() : "";
   return { final_url: baseUrl, kind: "html", title: article?.title ?? document.title ?? null, published_at: published, lang, text, links };
 }
+
+function footnote(md: string): { text: string; link_table: LinkRef[] } { const f = footnoteLinks(md); return { text: f.text, link_table: f.links }; }
 
 function pickDate(meta: Record<string, unknown>): string | null {
   for (const k of ["publishedTime", "article:published_time", "datePublished", "date", "og:updated_time", "modifiedTime"]) {

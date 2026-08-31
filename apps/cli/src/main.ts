@@ -165,7 +165,7 @@ async function investigate() {
           const t = resolveTier(safeHost(r.final_url), tierRows);
           src = await insertSource({
             investigation_id: inv.id, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status,
-            content_hash: hash, blob_key: key, text: r.text, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null,
+            content_hash: hash, blob_key: key, text: r.text, link_table: r.link_table, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null,
             meta: { attempts: r.attempts, links: r.links.length }, family_id: t.family_id, tier: t.tier, tier_kind: t.kind, snapshot_key: snapKey, captured_at: new Date(),
           });
           totals.fetched++;

@@ -37,7 +37,7 @@ export async function setInvestigationStatus(id: string, status: string): Promis
 export interface SourceRow {
   id: string; investigation_id: string; url: string; final_url: string | null; domain: string | null; kind: string;
   fetch_method: string; http_status: number | null; fetched_at: Date; content_hash: string | null; blob_key: string | null;
-  text: string | null; title: string | null; published_at: Date | null; lang: string | null; status: string; error: string | null; meta: Record<string, unknown>;
+  text: string | null; link_table?: unknown; title: string | null; published_at: Date | null; lang: string | null; status: string; error: string | null; meta: Record<string, unknown>;
   family_id: string | null; tier: string | null; tier_kind: string | null; snapshot_key: string | null; captured_at: Date | null;
   doc_kind?: string | null; publisher_name?: string | null; publisher_type?: string | null; self_published?: boolean | null;
 }
@@ -55,9 +55,9 @@ export async function findSourceByHash(investigationId: string, hash: string): P
 export async function insertSource(s: Omit<SourceRow, "id" | "fetched_at">): Promise<SourceRow> {
   const id = uuidv7();
   const rows = await query<SourceRow>(
-    `INSERT INTO sources (id, investigation_id, url, final_url, domain, kind, fetch_method, http_status, content_hash, blob_key, text, title, published_at, lang, status, error, meta, family_id, tier, tier_kind, snapshot_key, captured_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
-    [id, s.investigation_id, s.url, s.final_url, s.domain, s.kind, s.fetch_method, s.http_status, s.content_hash, s.blob_key, s.text, s.title, s.published_at, s.lang, s.status, s.error, JSON.stringify(s.meta ?? {}), s.family_id, s.tier, s.tier_kind, s.snapshot_key, s.captured_at],
+    `INSERT INTO sources (id, investigation_id, url, final_url, domain, kind, fetch_method, http_status, content_hash, blob_key, text, link_table, title, published_at, lang, status, error, meta, family_id, tier, tier_kind, snapshot_key, captured_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,
+    [id, s.investigation_id, s.url, s.final_url, s.domain, s.kind, s.fetch_method, s.http_status, s.content_hash, s.blob_key, s.text, JSON.stringify(s.link_table ?? []), s.title, s.published_at, s.lang, s.status, s.error, JSON.stringify(s.meta ?? {}), s.family_id, s.tier, s.tier_kind, s.snapshot_key, s.captured_at],
   );
   return rows[0]!;
 }
