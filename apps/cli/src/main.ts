@@ -373,13 +373,23 @@ async function judge(id?: string) {
     usd += u;
     const tag = v.verdict === "same" ? "SAME     " : v.verdict === "different" ? "DIFFERENT" : v.verdict === "related" ? `RELATED:${v.related_kind}` : "unsure   ";
     console.log(`${tag}  ${a.name}  ↔  ${b.name}\n           ${v.reason}${v.decisive_evidence ? "  [" + v.decisive_evidence.slice(0, 120) + "]" : ""}`);
-    // evidence on the hypothesis, never a decision: the resolver shifts the pair's score by it (±4); humans decide
-    await query(`UPDATE hypotheses SET evidence = evidence || $2::jsonb, updated_at=now() WHERE id=$1`, [h.id, JSON.stringify([{ kind: "llm", verdict: v.verdict, related_kind: v.related_kind || null, reason: v.reason, decisive: v.decisive_evidence || null, at: new Date().toISOString() }])]);
-    if (v.verdict !== "unsure") decided++;
+    // a judgment that read both files IS a merge reason (model v0.4 §5): it is recorded as a decision (method
+    // llm), reversible by the owner. 'unsure' leaves the hypothesis open. The score only proposed the pair.
+    if (v.verdict === "unsure") {
+      await query(`UPDATE hypotheses SET evidence = evidence || $2::jsonb, updated_at=now() WHERE id=$1`, [h.id, JSON.stringify([{ kind: "llm", verdict: "unsure", reason: v.reason, at: new Date().toISOString() }])]);
+      continue;
+    }
+    let pa = h.pattern.a_id as string, pb = h.pattern.b_id as string; if (pa > pb) [pa, pb] = [pb, pa];
+    const verdict = v.verdict === "same" ? "same" : v.verdict === "different" ? "not_same" : "related";
+    const nid = uuidv7();
+    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [nid, inv.id, pa, pb]);
+    await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, related_kind, method, score, note) VALUES ($1,$2,$3,$4,$5,$6,'llm',$7,$8)`,
+      [nid, inv.id, pa, pb, verdict, v.related_kind || null, h.score, `${v.reason} ${v.decisive_evidence ? "[" + v.decisive_evidence + "]" : ""}`.slice(0, 900)]);
+    decided++;
   }
-  if (rows.length) await recordDecision(inv.id, { actor: "llm", kind: "refer", subject: { hypotheses: rows.map((h) => h.id) }, rationale: `judged ${rows.length} identity pairs: ${decided} verdicts recorded as evidence (${usd.toFixed(4)} USD)`, reversible_by: "wg decide" });
+  if (rows.length) await recordDecision(inv.id, { actor: "llm", kind: "refer", subject: { hypotheses: rows.map((h) => h.id) }, rationale: `judged ${rows.length} identity pairs: ${decided} decided (${usd.toFixed(4)} USD)`, reversible_by: "wg decide" });
   console.log(`
-judged ${rows.length} pairs · ${decided} with a verdict (recorded as evidence, weight ±4) · $${usd.toFixed(4)}`);
+judged ${rows.length} pairs · ${decided} decided (reversible) · $${usd.toFixed(4)}`);
   if (decided) await rebuildCmd(inv.id);
 }
 

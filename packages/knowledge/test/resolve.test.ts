@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolve, scorePair, tokenIdf, jaroWinkler, initialism, pairKey, type Provisional } from "../src/resolve.ts";
+import { resolve, scorePair, tokenIdf, jaroWinkler, initialism, type Provisional } from "../src/resolve.ts";
 
 const P = (id: string, type: string, name: string, o: Partial<Provisional> = {}): Provisional => ({
   id, type, kind: null, name, name_norm: name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(), keys: {}, neighbors: new Set(), claim_count: 1, ...o,
@@ -9,7 +9,7 @@ const filler = ["acme capital", "zenith capital", "orion partners", "blue fund",
   .map((n, i) => P(`f${i}`, "organization", n));
 
 describe("resolve — organizations", () => {
-  it("merges brand / short / long aliases; links the management company as related; merges the initialism", () => {
+  it("proposes brand/short/long aliases and the initialism as candidates (never auto-merged); links the management company as related", () => {
     const ents = [
       P("acorn1", "organization", "ACORN", { neighbors: new Set(["seed"]) }),
       P("acorn2", "organization", "Acorn Capital", { neighbors: new Set(["seed", "mentor"]) }),
@@ -20,11 +20,16 @@ describe("resolve — organizations", () => {
       ...filler,
     ];
     const r = resolve(ents, []);
-    expect(r.clusters.get("acorn1")).toBe(r.clusters.get("acorn2"));
-    expect(r.clusters.get("acorn3")).not.toBe(r.clusters.get("acorn1"));
-    expect(r.related.some((x) => (x.a === "acorn1" || x.a === "acorn2") && x.b === "acorn3" && x.related_kind === "manages")).toBe(true);
-    expect(r.clusters.get("kp1")).toBe(r.clusters.get("kp3"));
-    expect(r.clusters.get("kp2")).toBe(r.clusters.get("kp1"));
+    const hyp = (a: string, b: string) => r.hypotheses.some((h) => [h.a, h.b].includes(a) && [h.a, h.b].includes(b));
+    // orgs get person-level caution (v0.4 §5): name variants are candidates for the judge, not silent merges
+    expect(r.clusters.get("acorn1")).not.toBe(r.clusters.get("acorn2"));
+    expect(hyp("acorn1", "acorn2")).toBe(true);
+    expect(hyp("kp1", "kp3") || hyp("kp2", "kp1")).toBe(true);
+    // structural relations are still derived (a management LP manages the fund)
+    expect(r.related.some((x) => x.related_kind === "manages")).toBe(true);
+    // once the judge/owner decides two of them are the same, they merge
+    const decided = resolve(ents, [{ a_id: "acorn1", b_id: "acorn2", verdict: "same" }]);
+    expect(decided.clusters.get("acorn1")).toBe(decided.clusters.get("acorn2"));
   });
 });
 
@@ -68,10 +73,12 @@ describe("resolve — people", () => {
     const alone = resolve([P("s1", "person", "Eliot Varney"), P("s2", "person", "Eliot VARNEY"), ...filler], []);
     expect(alone.clusters.get("s1")).not.toBe(alone.clusters.get("s2"));
     expect(alone.hypotheses.some((h) => h.a === "s1" && h.b === "s2")).toBe(true);
+    // shared context proposes a candidate but NEVER merges — only an identifier, a judgment, or the owner merges (v0.4 §5)
     const shared = resolve([P("s1", "person", "Eliot Varney", { neighbors: new Set(["uni", "club"]) }), P("s2", "person", "Eliot VARNEY", { neighbors: new Set(["uni", "club"]) }), ...filler], []);
-    expect(shared.clusters.get("s1")).toBe(shared.clusters.get("s2"));
+    expect(shared.clusters.get("s1")).not.toBe(shared.clusters.get("s2"));
+    expect(shared.hypotheses.some((h) => (h.a === "s1" && h.b === "s2") || (h.a === "s2" && h.b === "s1"))).toBe(true);
     const keyed = resolve([P("s1", "person", "Eliot Varney", { keys: { handle: ["@handle-e"] } }), P("s2", "person", "Eliot VARNEY", { keys: { handle: ["@handle-e"] } }), ...filler], []);
-    expect(keyed.clusters.get("s1")).toBe(keyed.clusters.get("s2"));
+    expect(keyed.clusters.get("s1")).toBe(keyed.clusters.get("s2"));   // a shared unique identifier merges
   });
 
   it("decisions override scores and are reversible by a later not_same", () => {
@@ -96,19 +103,21 @@ describe("scoring pieces", () => {
   });
 });
 
-describe("judge evidence (door 3)", () => {
-  it("shifts a same-name pair over the merge line, sinks a 'different', turns 'related' into a directed related pair, and never overrides a hard-key conflict", () => {
-    const base = [P("s1", "person", "Eliot Varney"), P("s2", "person", "Eliot VARNEY"), ...filler];
-    const k = pairKey("s1", "s2");
-    expect(resolve(base, [], new Map([[k, { verdict: "same" }]])).clusters.get("s1")).toBe(resolve(base, [], new Map([[k, { verdict: "same" }]])).clusters.get("s2"));
-    const diff = resolve(base, [], new Map([[k, { verdict: "different" }]]));
-    expect(diff.clusters.get("s1")).not.toBe(diff.clusters.get("s2"));
-    expect(diff.hypotheses.some((h) => h.a === "s1" && h.b === "s2")).toBe(false);
-    const orgs = [P("m", "organization", "Zephyr Capital"), P("f", "organization", "Zephyr Partners"), ...filler];
-    const rel = resolve(orgs, [], new Map([[pairKey("m", "f"), { verdict: "related", kind: "parent", a: "m" }]]));
-    expect(rel.related.some((r) => r.related_kind === "part_of" && r.features.related_src === "f")).toBe(true);
-    const keyed = [P("a", "person", "Jane Doe", { keys: { email: ["a@x.org"] } }), P("b", "person", "Jane Doe", { keys: { email: ["b@y.org"] } }), ...filler];
-    const guarded = resolve(keyed, [], new Map([[pairKey("a", "b"), { verdict: "same" }]]));
-    expect(guarded.clusters.get("a")).not.toBe(guarded.clusters.get("b"));
+describe("identity: scores propose, only keys/decisions/owner merge (v0.4 §5)", () => {
+  it("a high-scoring same-name pair with lots of context is a hypothesis, not a merge", () => {
+    const r = resolve([
+      P("s1", "person", "Eliot Varney", { neighbors: new Set(["uni", "club", "aix"]) }),
+      P("s2", "person", "Eliot VARNEY", { neighbors: new Set(["uni", "club", "aix"]) }), ...filler], []);
+    expect(r.merges.some((m) => [m.a, m.b].includes("s1") && [m.a, m.b].includes("s2"))).toBe(false);
+    expect(r.hypotheses.some((h) => [h.a, h.b].includes("s1") && [h.a, h.b].includes("s2"))).toBe(true);
+  });
+  it("a shared unique identifier merges; a judgment (decision) merges; a conflicting unique key never merges", () => {
+    const key = resolve([P("a", "person", "Jane Doe", { keys: { email: ["j@x.org"] } }), P("b", "person", "Jane M. Doe", { keys: { email: ["j@x.org"] } }), ...filler], []);
+    expect(key.clusters.get("a")).toBe(key.clusters.get("b"));
+    const judged = resolve([P("a", "person", "Eliot Varney"), P("b", "person", "Eliot VARNEY"), ...filler], [{ a_id: "a", b_id: "b", verdict: "same" }]);
+    expect(judged.clusters.get("a")).toBe(judged.clusters.get("b"));
+    const conflict = resolve([P("a", "person", "Jane Doe", { keys: { email: ["a@x.org"] } }), P("b", "person", "Jane Doe", { keys: { email: ["b@y.org"] } }), ...filler], [{ a_id: "a", b_id: "b", verdict: "same" }]);
+    expect(conflict.clusters.get("a")).not.toBe(conflict.clusters.get("b"));   // a hard-key conflict guards even a decision
   });
 });
+

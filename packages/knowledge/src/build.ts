@@ -8,7 +8,7 @@ import { grade, betterTier, type EvidenceProfile } from "./grade.ts";
 import { intervalHoles } from "./gaps.ts";
 import { loadRuleFiles, slotsFor, type Rule, type EntityView } from "./rules.ts";
 import { tierForClaim, type SourceFacts } from "./reliability.ts";
-import { resolve as resolveEntities, pairKey, type Provisional, type Decision, type PairEvidence } from "./resolve.ts";
+import { resolve as resolveEntities, type Provisional, type Decision } from "./resolve.ts";
 
 interface ClaimRow {
   id: string; kind: "relation" | "attribute"; source_id: string; tier: string | null; attributed_to: string | null; span_method: string | null;
@@ -110,12 +110,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     keys: Object.fromEntries(Object.entries(e.keys).map(([k, v]) => [k, [...v]])), neighbors: neighborsOf.get(e.id) ?? new Set(), claim_count: e.claims.size,
   }));
   const decisions = (await query<Decision & { a_id: string; b_id: string }>(`SELECT a_id, b_id, verdict, related_kind FROM resolution_decisions WHERE investigation_id=$1 AND superseded_by IS NULL`, [investigationId]));
-  const evidence: PairEvidence = new Map();
-  for (const h of await query<{ a: string; b: string; ev: { kind: string; verdict?: string; related_kind?: string | null }[] }>(`SELECT pattern->>'a_id' a, pattern->>'b_id' b, evidence ev FROM hypotheses WHERE investigation_id=$1 AND kind='identity'`, [investigationId])) {
-    const last = [...(h.ev ?? [])].reverse().find((e) => e.kind === "llm" && e.verdict && e.verdict !== "unsure");
-    if (last) evidence.set(pairKey(h.a, h.b), { verdict: last.verdict as "same" | "different" | "related", kind: last.related_kind ?? null, a: h.a });
-  }
-  const res = resolveEntities(provisional, decisions, evidence);
+  const res = resolveEntities(provisional, decisions);
   // canonical id per cluster = member with most claims (ties: smaller id); remap every provisional id → canonical
   const clusterMembers = new Map<string, Ent[]>();
   for (const e of ents.values()) { const root = res.clusters.get(e.id)!; (clusterMembers.get(root) ?? clusterMembers.set(root, []).get(root)!).push(e); }
