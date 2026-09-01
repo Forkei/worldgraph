@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { registry, getPolicy, env, uuidv7 } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
-  findSourceByUrl, findSourceByHash, insertSource, insertClaimsBatch, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourcePublisher, syncCapabilities, listCapabilities, getCachedSearch, putCachedSearch,
+  findSourceByUrl, findSourceByHash, insertSource, insertClaimsBatch, deleteInvestigation, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourcePublisher, syncCapabilities, listCapabilities, getCachedSearch, putCachedSearch,
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
@@ -43,6 +43,7 @@ async function main() {
     case "triage": return triage(sub ?? s("inv"));
     case "peers": return peers(sub ?? s("inv"), rest[0]);
     case "serve": return serve();
+    case "forget": return forget(sub ?? s("inv"));
     case "export-records": return exportRecords(rest[0] ?? sub);
     case "dispatch": return void (await dispatch(sub ?? s("inv")));
     case "run": return runLoop(sub ?? s("inv"));
@@ -104,6 +105,7 @@ async function main() {
   wg triage <inv> [--min-cos 0.86]   learned model proposes merge candidates name-blocking missed; judge confirms
   wg peers <inv> "<entity>"      nearest peers by embedding + facts they have that this entity lacks (learned gap-finding)
   wg serve [--port 5590]         launch the local web UI (graph + dossier + run the loop from the browser)
+  wg forget <inv>                delete an investigation and all its data
   wg merges <inv>                entities assembled from several names; related-not-merged pairs
   wg candidates <inv>            open identity hypotheses (the uncertain band)
   wg decide <inv> <a> <b> same|not_same|related:<kind>
@@ -484,6 +486,13 @@ async function exportRecords(file?: string) {
   const multi = new Map<string, number>(); for (const r of rows) multi.set(r.entity_id, (multi.get(r.entity_id) ?? 0) + 1);
   const posEnts = [...multi.values()].filter((n) => n > 1).length;
   console.log(`wrote ${rows.length} records · ${invs} investigations · ${ents} entities (${posEnts} with ≥2 members = positive pairs) → ${file}`);
+}
+
+async function forget(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg forget <inv>");
+  await deleteInvestigation(inv.id);
+  console.log(`forgot ${short(inv.id)} — ${inv.title}`);
 }
 
 async function serve() {

@@ -155,7 +155,7 @@ async function selectInv(id, meta){
   attrsBy=new Map(); for(const a of g.attrs){ (attrsBy.get(a.e)||attrsBy.set(a.e,[]).get(a.e)).push(a);} }
   const subj = [...nodes].sort((a,b)=>(+b.claims)-(+a.claims))[0];
   $("#title").innerHTML = `${esc(meta?.seed?.name||subj?.name||"")} <small>· ${nodes.length} entities · ${links.length} links</small>`;
-  $("#controls").innerHTML = `<button onclick="runLoop()">▶ Run loop</button> <button onclick="askSearch()">Search</button> <button onclick="triage()">Triage</button>`;
+  $("#controls").innerHTML = `<button onclick="runLoop()">▶ Run loop</button> <button onclick="askSearch()">Search</button> <button onclick="triage()">Triage</button> <button onclick="forgetInv()" title="delete this investigation">🗑</button>`;
   loadInvestigations(); resize(); if(subj){ selected=subj.id; setTimeout(()=>openNode(subj.id),300);}
 }
 let edgesBy=new Map(), attrsBy=new Map();
@@ -238,6 +238,7 @@ function sse(url,body,title){
 }
 function appendLog(t){const l=$("#log");const line=document.createElement("div");if(/^\s*·/.test(t))line.className="agent";line.textContent=t;l.appendChild(line);l.scrollTop=l.scrollHeight;}
 function runLoop(){ if(!INV)return; sse("/api/run/"+INV,{max:4,per:3,loop:true,passes:3},"running investigation loop"); }
+async function forgetInv(){ if(!INV)return; if(!confirm("Delete this investigation and all its data?"))return; await fetch("/api/investigations/"+INV,{method:"DELETE"}); INV=null;nodes=[];links=[];$("#title").innerHTML="";$("#controls").innerHTML="";$("#empty").style.display="flex";closeDrawer();loadInvestigations(); }
 function triage(){ if(!INV)return; sse("/api/triage/"+INV,{},"triage — learned merge candidates"); }
 function askSearch(){ const q=prompt("Search the web and fetch top results into the graph:"); if(q) sse("/api/search/"+INV,{q,fetch:3},"searching: "+q); }
 $("#f-go").onclick=()=>{ const seed=$("#f-seed").value.trim(),goal=$("#f-goal").value.trim(); if(!seed||!goal){alert("Give a subject and a goal.");return;} sse("/api/create",{seed,kind:$("#f-kind").value,goal,url:$("#f-url").value.trim()||undefined},"starting: "+seed); setTimeout(()=>loadInvestigations(),4000); };

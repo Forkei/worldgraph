@@ -1,7 +1,7 @@
 // Repository functions for M0 tables. Plain SQL, no ORM.
 import type pg from "pg";
 import { uuidv7, type RelationClaim, type AttributeClaim } from "@worldgraph/core";
-import { query, getPool } from "./client.ts";
+import { query, getPool, withTx } from "./client.ts";
 
 export const DEFAULT_WORKSPACE = "00000000-0000-7000-8000-000000000001";
 
@@ -28,6 +28,18 @@ export async function getInvestigation(idOrPrefix: string): Promise<Investigatio
 
 export async function listInvestigations(): Promise<InvestigationRow[]> {
   return query<InvestigationRow>(`SELECT * FROM investigations ORDER BY created_at DESC`);
+}
+
+export async function deleteInvestigation(id: string): Promise<void> {
+  await withTx(async (c) => {
+    await c.query(`DELETE FROM justifications j WHERE j.derived_id IN (SELECT id FROM entities WHERE investigation_id=$1) OR j.derived_id IN (SELECT id FROM links WHERE investigation_id=$1) OR j.derived_id IN (SELECT id FROM attributes WHERE investigation_id=$1) OR j.derived_id IN (SELECT id FROM slots WHERE investigation_id=$1)`, [id]);
+    await c.query(`DELETE FROM entity_members WHERE entity_id IN (SELECT id FROM entities WHERE investigation_id=$1)`, [id]);
+    await c.query(`DELETE FROM claim_entities WHERE entity_id IN (SELECT id FROM entities WHERE investigation_id=$1)`, [id]);
+    for (const t of ["provisional_records", "slots", "attributes", "links", "hypotheses", "resolution_decisions", "missions", "actions", "questions", "decisions", "entities", "relation_claims", "attribute_claims", "extractions", "cost_ledger", "audit_log", "sources"]) {
+      await c.query(`DELETE FROM ${t} WHERE investigation_id=$1`, [id]).catch(() => {});
+    }
+    await c.query(`DELETE FROM investigations WHERE id=$1`, [id]);
+  });
 }
 
 export async function setInvestigationStatus(id: string, status: string): Promise<void> {

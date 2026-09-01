@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { query, listInvestigations, getInvestigation, investigationStats } from "@worldgraph/db";
+import { query, listInvestigations, getInvestigation, investigationStats, deleteInvestigation } from "@worldgraph/db";
 import { why } from "@worldgraph/knowledge";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -69,6 +69,8 @@ const server = createServer(async (req, res) => {
     if (search && req.method === "POST") { const b = await readBody(req); return stream(res, ["search", search[1]!, "--q", String(b.q ?? ""), "--num", "10", ...(b.fetch ? ["--fetch", String(b.fetch)] : [])]); }
     const tri = p.match(/^\/api\/triage\/([0-9a-f-]+)$/);
     if (tri && req.method === "POST") return stream(res, ["triage", tri[1]!]);
+    const del = p.match(/^\/api\/investigations\/([0-9a-f-]+)$/);
+    if (del && req.method === "DELETE") { await deleteInvestigation(del[1]!); return json(res, { ok: true }); }
 
     res.writeHead(404); res.end("not found");
   } catch (e) { json(res, { error: String((e as Error).message) }, 500); }
