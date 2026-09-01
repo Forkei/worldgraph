@@ -33,3 +33,17 @@ Labels are our own casework (judge/owner decisions) — distant supervision, not
 Strong go signal. Next integration steps (future): serve the fine-tuned model (sidecar or ONNX) so the
 resolver uses embedding cosine as the proposer + ANN blocking, replacing hand weights; grow labels from every
 run; then the GNN (structure-aware) and KGFM (link-prediction gaps) per research/14.
+
+## Integration (2026-09-01): `wg triage`
+The learned model is wired in as a **blocking/proposer**, not an auto-merger: `ml/score.py` runs as a
+subprocess (TS ↔ Python via `packages/plan/src/triage.ts`), embeds the provisional records, and returns
+high-cosine candidate pairs — including ones the resolver's name-blocking never compared. `wg triage <inv>`
+feeds each candidate to the **judge**, which confirms or declines. Model proposes, judge decides (model §5).
+
+Run: `WG_PYTHON=<python> wg triage <inv> [--min-cos 0.86] [--limit 30]`. Falls back to base all-MiniLM if
+`ml/triberta-min` is absent (regenerate with `wg export-records ml/records.jsonl && python ml/train.py`); if
+Python is unavailable it degrades to the hand-blocking resolver + judge with no error.
+
+First run (seed A, min-cos 0.87): model surfaced 13 cross-entity candidates → judge merged **Birch Holdings
+Inc ↔ Birch** (a real under-merge name-blocking missed) and correctly declined every Acorn fund vehicle
+(Acorn II ≠ III; siblings; AMCD XVII part_of AMCD). 1 merge, 0 bad merges, $0.02.

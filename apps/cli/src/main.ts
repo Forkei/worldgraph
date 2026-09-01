@@ -10,7 +10,7 @@ import {
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, type Side } from "@worldgraph/extract";
-import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState } from "@worldgraph/plan";
+import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -24,7 +24,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -40,6 +40,7 @@ async function main() {
     case "search": return search(sub ?? s("inv"), ...rest);
     case "question": return question(sub ?? s("inv"), ...rest);
     case "audit": return auditCmd(sub ?? s("inv"));
+    case "triage": return triage(sub ?? s("inv"));
     case "export-records": return exportRecords(rest[0] ?? sub);
     case "dispatch": return void (await dispatch(sub ?? s("inv")));
     case "run": return runLoop(sub ?? s("inv"));
@@ -98,6 +99,7 @@ async function main() {
   wg rebuild <inv>               claims → entities, links, attributes (graded), slots
   wg audit <inv> [--n 40]        measure extraction precision (does each claim's quote support it?)
   wg export-records <file.jsonl> export provisional records + cluster labels (for learned ER / TriBERTa)
+  wg triage <inv> [--min-cos 0.86]   learned model proposes merge candidates name-blocking missed; judge confirms
   wg merges <inv>                entities assembled from several names; related-not-merged pairs
   wg candidates <inv>            open identity hypotheses (the uncertain band)
   wg decide <inv> <a> <b> same|not_same|related:<kind>
@@ -480,7 +482,44 @@ async function exportRecords(file?: string) {
   console.log(`wrote ${rows.length} records · ${invs} investigations · ${ents} entities (${posEnts} with ≥2 members = positive pairs) → ${file}`);
 }
 
+async function triage(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail('wg triage <inv> [--min-cos 0.86] [--limit 30]  — the learned model proposes merge candidates name-blocking missed; the judge confirms');
+  await rebuildCmd(inv.id);
+  const recs = await query<{ provisional_id: string; entity_id: string; name: string; type: string; record: string }>(
+    `SELECT provisional_id, entity_id, name, type, record FROM provisional_records WHERE investigation_id=$1`, [inv.id]);
+  if (recs.length < 2) return fail("no provisional records — run the graph first");
+  const entOf = new Map(recs.map((r) => [r.provisional_id, r.entity_id]));
+  const nameOf = new Map(recs.map((r) => [r.provisional_id, r.name]));
+  const { model, pairs } = await modelCandidatePairs({ records: recs.map((r) => ({ id: r.provisional_id, record: r.record, type: r.type })), min_cos: Number(s("min-cos") ?? 0.86), top_k: 6 });
+  if (model.startsWith("unavailable") || model.startsWith("error")) return fail(`model scorer not available (${model}). Ensure Python + ml/score.py; set WG_PYTHON if needed.`);
+  // candidates the resolver did NOT already merge, with no standing decision
+  const existing = new Set((await query<{ a: string; b: string }>(`SELECT a_id::text a, b_id::text b FROM resolution_decisions WHERE investigation_id=$1 AND superseded_by IS NULL`, [inv.id])).map((d) => (d.a < d.b ? `${d.a}|${d.b}` : `${d.b}|${d.a}`)));
+  const cands = pairs.filter((p) => entOf.get(p.a) !== entOf.get(p.b)).filter((p) => { const k = p.a < p.b ? `${p.a}|${p.b}` : `${p.b}|${p.a}`; return !existing.has(k); }).slice(0, Number(s("limit") ?? 30));
+  console.log(`model ${model}: ${pairs.length} similar pairs → ${cands.length} new merge candidates to judge\n`);
+  let usd = 0, merged = 0, decided = 0;
+  for (const p of cands) {
+    const a = await sideFor(inv.id, p.a), b = await sideFor(inv.id, p.b);
+    const { v, usd: u } = await judgePair(a, b); usd += u;
+    let av = v.verdict as string;
+    if (av === "related" && a.type === "person" && b.type === "person") av = "unsure";
+    const tag = av === "same" ? "SAME     " : av === "different" ? "different" : av === "related" ? `related:${v.related_kind}` : "unsure   ";
+    console.log(`${(p.cos + "").padEnd(6)} ${tag}  ${nameOf.get(p.a)}  ↔  ${nameOf.get(p.b)}`);
+    if (av === "unsure") continue;
+    let pa = p.a, pb = p.b; if (pa > pb) [pa, pb] = [pb, pa];
+    const verdict = av === "same" ? "same" : av === "different" ? "not_same" : "related";
+    const nid = uuidv7();
+    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [nid, inv.id, pa, pb]);
+    await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, related_kind, method, score, note) VALUES ($1,$2,$3,$4,$5,$6,'llm',$7,$8)`,
+      [nid, inv.id, pa, pb, verdict, v.related_kind || null, p.cos, `[model ${p.cos}] ${v.reason}`.slice(0, 900)]);
+    decided++; if (verdict === "same") merged++;
+  }
+  console.log(`\njudged ${cands.length} model candidates · ${merged} merged · ${decided} decided · $${usd.toFixed(4)}`);
+  if (decided) await rebuildCmd(inv.id);
+}
+
 async function auditCmd(id?: string) {
+
   const inv = id ? await getInvestigation(id) : null;
   if (!inv) return fail("wg audit <inv> [--n 40]  — measure extraction precision (does each claim's quote support it?)");
   const n = Number(s("n") ?? 40);
