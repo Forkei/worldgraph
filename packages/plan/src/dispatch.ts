@@ -3,16 +3,11 @@
 // neighbour). Score ranks missions; it never decides truth (M2_DESIGN §4). v1 missions run as scripted
 // search→fetch (missions.ts); agents come in step 4.
 import type { Graph } from "@worldgraph/knowledge";
-import { ego } from "@worldgraph/knowledge";
 import type { Indicator } from "./compile.ts";
 
 export interface Gap { entity: string; entityName: string; indicator: string; predicates: string[]; kind: "missing" | "thin"; ring: number; weight: number; have: number; origins: number }
 export interface MissionDraft { objective: string; scope: { entities: string[]; indicators: string[] }; frontier: string[]; score: number; score_parts: Record<string, number>; dedupe_key: string }
 
-// ring-1 is reached only through PROFESSIONAL ties for career indicators — never family (spouse_of/parent_of),
-// so we don't chase a spouse's board seats or a child's employment. Family edges stay in the graph; they
-// just don't spawn professional missions.
-const PROFESSIONAL_EDGES = new Set(["works_at", "board_member", "member_of", "manages", "founded"]);
 
 /** Independent-origin count for `entity` on any of `predicates` (max across them). */
 function coverage(g: Graph, entity: string, predicates: string[]): { have: number; origins: number } {
@@ -34,18 +29,10 @@ export function computeGaps(g: Graph, subjectId: string, indicators: Indicator[]
     if (have === 0) gaps.push({ entity: subjectId, entityName: subjName, indicator: ind.name, predicates: ind.predicates, kind: "missing", ring: 0, weight: ind.weight, have, origins });
     else if (origins < minOrigins) gaps.push({ entity: subjectId, entityName: subjName, indicator: ind.name, predicates: ind.predicates, kind: "thin", ring: 0, weight: ind.weight, have, origins });
   }
-  // ring-1: neighbours reached by relationship predicates — pursue the same indicators that concern people/orgs
-  const sub = ego(g, subjectId, 1, { limit: 60 });
-  const neighbours = new Set<string>();
-  for (const l of sub.links) if (PROFESSIONAL_EDGES.has(l.predicate)) { neighbours.add(l.src === subjectId ? l.dst : l.src); }
-  for (const nId of neighbours) {
-    const n = g.entities.get(nId); if (!n || n.type !== "person") continue;   // v1: only chase person neighbours
-    for (const ind of indicators) {
-      if (!ind.predicates.some((p) => ["works_at", "board_member", "founded", "related_to", "knows"].includes(p))) continue;
-      const { have, origins } = coverage(g, nId, ind.predicates);
-      if (have === 0) gaps.push({ entity: nId, entityName: n.name, indicator: ind.name, predicates: ind.predicates, kind: "missing", ring: 1, weight: ind.weight, have, origins });
-    }
-  }
+  // v1 is SUBJECT-FOCUSED. Ring-1 auto-expansion is deliberately off: professional edges point to orgs (not
+  // people), so a naive person-neighbour expansion is both inert and a sprawl risk (the model's rule: expand a
+  // ring only when an indicator or hypothesis actually serves it, via the score — not by default). Collaborators
+  // are found by the agent searching, and specific associates get their own investigation. [ring expansion: later]
   return gaps;
 }
 
