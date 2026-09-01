@@ -365,6 +365,11 @@ async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInv
       if (staged.has(url)) { const st = staged.get(url)!; return summarizeStaged(url, st); }
       const existing = await findSourceByUrl(inv.id, url);
       if (existing && existing.status === "failed") return "that page failed to fetch earlier; try another";
+      // already read on a prior mission and its facts are in the graph — don't re-fetch or re-reason it
+      if (existing && existing.status === "extracted") {
+        const [c] = await query<{ n: string }>(`SELECT (SELECT count(*) FROM relation_claims WHERE source_id=$1 AND status='raw') + (SELECT count(*) FROM attribute_claims WHERE source_id=$1 AND status='raw') n`, [existing.id]);
+        return `already read (${c?.n ?? 0} facts from it are already in the graph) — no need to read it again; try another lead`;
+      }
       let src = existing;
       if (!src) {
         try {

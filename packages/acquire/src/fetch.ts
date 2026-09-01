@@ -3,7 +3,7 @@
 import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import { env } from "@worldgraph/core";
-import { footnoteLinks, type LinkRef } from "./markdown.ts";
+import { footnoteLinks, trimBoilerplate, type LinkRef } from "./markdown.ts";
 import { rateLimit } from "./ratelimit.ts";
 
 export interface FetchResult {
@@ -83,7 +83,7 @@ async function viaFirecrawl(url: string, timeoutMs: number): Promise<FetchResult
   const j = (await res.json()) as { success?: boolean; error?: string; data?: { markdown?: string; html?: string; links?: string[]; metadata?: Record<string, unknown> } };
   if (!res.ok || !j.success || !j.data) throw new Error(`firecrawl ${res.status}: ${j.error ?? "no data"}`);
   const meta = j.data.metadata ?? {};
-  const md = j.data.markdown ?? "";
+  const md = trimBoilerplate(j.data.markdown ?? "");
   const status = typeof meta.statusCode === "number" ? meta.statusCode : null;
   return {
     url,
