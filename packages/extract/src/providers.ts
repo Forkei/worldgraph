@@ -107,7 +107,10 @@ async function callGemini(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmResult
   const stop = res.candidates?.[0]?.finishReason ?? null;
   const text = res.text ?? "";
   if (!text) throw new Error(`gemini returned no text (finish=${stop})`);
-  return { text, inTok: u.promptTokenCount ?? 0, outTok: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0), stop: String(stop) };
+  // cached-prompt tokens bill at ~0.25x; cost-effective input = fresh + 0.25 x cached
+  const cached = u.cachedContentTokenCount ?? 0;
+  const inTok = Math.round((u.promptTokenCount ?? 0) - cached * 0.75);
+  return { text, inTok, outTok: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0), stop: String(stop) };
 }
 
 export const hasKeyFor = (m: ModelSpec): boolean => (m.provider === "anthropic" ? !!env.anthropicKey : !!env.geminiKey);
