@@ -10,7 +10,7 @@ import {
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, type Side } from "@worldgraph/extract";
-import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs } from "@worldgraph/plan";
+import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -41,6 +41,7 @@ async function main() {
     case "question": return question(sub ?? s("inv"), ...rest);
     case "audit": return auditCmd(sub ?? s("inv"));
     case "triage": return triage(sub ?? s("inv"));
+    case "peers": return peers(sub ?? s("inv"), rest[0]);
     case "export-records": return exportRecords(rest[0] ?? sub);
     case "dispatch": return void (await dispatch(sub ?? s("inv")));
     case "run": return runLoop(sub ?? s("inv"));
@@ -100,6 +101,7 @@ async function main() {
   wg audit <inv> [--n 40]        measure extraction precision (does each claim's quote support it?)
   wg export-records <file.jsonl> export provisional records + cluster labels (for learned ER / TriBERTa)
   wg triage <inv> [--min-cos 0.86]   learned model proposes merge candidates name-blocking missed; judge confirms
+  wg peers <inv> "<entity>"      nearest peers by embedding + facts they have that this entity lacks (learned gap-finding)
   wg merges <inv>                entities assembled from several names; related-not-merged pairs
   wg candidates <inv>            open identity hypotheses (the uncertain band)
   wg decide <inv> <a> <b> same|not_same|related:<kind>
@@ -482,7 +484,39 @@ async function exportRecords(file?: string) {
   console.log(`wrote ${rows.length} records · ${invs} investigations · ${ents} entities (${posEnts} with ≥2 members = positive pairs) → ${file}`);
 }
 
+async function peers(id?: string, ref?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || !ref) return fail('wg peers <inv> "<entity>"  — nearest peers by embedding + the facts they have that this entity lacks (learned gap-finding)');
+  const eid = await findEntity(inv.id, ref);
+  const recs = await query<{ provisional_id: string; entity_id: string; name: string; type: string; record: string }>(
+    `SELECT provisional_id, entity_id, name, type, record FROM provisional_records WHERE investigation_id=$1`, [inv.id]);
+  const canon = new Map(recs.map((r) => [r.provisional_id, r.entity_id]));
+  const { model, peers: peerMap } = await modelPeers(recs.map((r) => ({ id: r.provisional_id, record: r.record, type: r.type })), 10);
+  if (model.startsWith("unavailable") || model.startsWith("error")) return fail(`model scorer not available (${model})`);
+  // peers of the target = peers of any of its provisional members, mapped to canonical entities, best cos kept
+  const members = recs.filter((r) => r.entity_id === eid).map((r) => r.provisional_id);
+  const peerCos = new Map<string, number>();
+  for (const m of members) for (const p of peerMap[m] ?? []) { const pe = canon.get(p.id)!; if (pe === eid) continue; peerCos.set(pe, Math.max(peerCos.get(pe) ?? 0, p.cos)); }
+  const topPeers = [...peerCos.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  // predicate/attribute sets per entity (from the built graph)
+  const predsOf = new Map<string, Set<string>>();
+  for (const l of await query<{ e: string; predicate: string }>(`SELECT src_id e, predicate FROM links WHERE investigation_id=$1 UNION SELECT dst_id e, predicate FROM links WHERE investigation_id=$1`, [inv.id])) (predsOf.get(l.e) ?? predsOf.set(l.e, new Set()).get(l.e)!).add(l.predicate);
+  for (const a of await query<{ e: string; key: string }>(`SELECT entity_id e, key FROM attributes WHERE investigation_id=$1`, [inv.id])) (predsOf.get(a.e) ?? predsOf.set(a.e, new Set()).get(a.e)!).add("attr:" + a.key);
+  const nameOf = new Map<string, string>(); for (const r of recs) nameOf.set(r.entity_id, r.name);
+  const mine = predsOf.get(eid) ?? new Set();
+  console.log(`\npeers of ${nameOf.get(eid) ?? ref}  (model ${model}):`);
+  for (const [pe, cos] of topPeers) console.log(`  ${cos.toFixed(3)}  ${nameOf.get(pe) ?? short(pe)}`);
+  // suggested gaps: facts the peers commonly have that the target lacks
+  const freq = new Map<string, number>();
+  for (const [pe] of topPeers) for (const p of predsOf.get(pe) ?? []) if (!mine.has(p)) freq.set(p, (freq.get(p) ?? 0) + 1);
+  const suggested = [...freq.entries()].filter(([, n]) => n >= Math.max(2, Math.ceil(topPeers.length / 3))).sort((a, b) => b[1] - a[1]);
+  console.log(`\nsuggested gaps (facts ${Math.max(2, Math.ceil(topPeers.length / 3))}+ peers have but ${nameOf.get(eid) ?? "this entity"} lacks):`);
+  if (!suggested.length) console.log("  (none — its profile matches its peers)");
+  for (const [p, n] of suggested) console.log(`  ${String(n).padStart(2)}/${topPeers.length}  ${p.startsWith("attr:") ? p.slice(5) + " (attribute)" : p}`);
+}
+
 async function triage(id?: string) {
+
   const inv = id ? await getInvestigation(id) : null;
   if (!inv) return fail('wg triage <inv> [--min-cos 0.86] [--limit 30]  — the learned model proposes merge candidates name-blocking missed; the judge confirms');
   await rebuildCmd(inv.id);

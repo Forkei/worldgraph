@@ -25,6 +25,13 @@ def main():
     types = [r.get("type", "") for r in recs]
     emb = model.encode([r["record"] for r in recs], normalize_embeddings=True, batch_size=64, show_progress_bar=False)
     sims = emb @ emb.T
+    mode = req.get("mode", "pairs")
+    if mode == "peers":
+        peers = {}
+        for i in range(len(recs)):
+            order = [j for j in np.argsort(-sims[i]) if j != i and (types[i] == types[j])][:top_k]
+            peers[ids[i]] = [{"id": ids[j], "cos": round(float(sims[i][j]), 4)} for j in order]
+        print(json.dumps({"model": os.path.basename(name), "peers": peers})); return
     pairs = []
     n = len(recs)
     for i in range(n):

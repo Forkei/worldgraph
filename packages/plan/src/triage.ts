@@ -29,3 +29,18 @@ export function modelCandidatePairs(req: ScoreRequest): Promise<{ model: string;
     py.stdin.end();
   });
 }
+
+export interface Peer { id: string; cos: number }
+/** Per-record nearest same-type neighbours by embedding — the substrate for peer-analogy gap finding. */
+export async function modelPeers(records: { id: string; record: string; type: string }[], topK = 8): Promise<{ model: string; peers: Record<string, Peer[]> }> {
+  return new Promise((resolve) => {
+    let out = "", err = "";
+    const py = spawn(PYTHON, [path.join(REPO, "ml", "score.py")], { cwd: REPO });
+    py.stdout.on("data", (d) => (out += d));
+    py.stderr.on("data", (d) => (err += d));
+    py.on("error", (e) => resolve({ model: "unavailable:" + e.message.slice(0, 60), peers: {} }));
+    py.on("close", (code) => { if (code !== 0) return resolve({ model: "error:" + err.trim().split("\n").pop()!.slice(0, 80), peers: {} }); try { resolve(JSON.parse(out)); } catch { resolve({ model: "bad-output", peers: {} }); } });
+    py.stdin.write(JSON.stringify({ mode: "peers", records, top_k: topK }));
+    py.stdin.end();
+  });
+}
