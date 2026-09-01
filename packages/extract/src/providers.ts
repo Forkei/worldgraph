@@ -1,6 +1,7 @@
 // Model providers (pluggable extractor backends). One call shape for Anthropic and Gemini; every call
 // returns tokens, cost, latency so the ledger and benchmarks are exact.
 import Anthropic from "@anthropic-ai/sdk";
+import { createHash } from "node:crypto";
 import { GoogleGenAI } from "@google/genai";
 import { env, requireEnv } from "@worldgraph/core";
 
@@ -91,13 +92,33 @@ async function callAnthropic(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmRes
   return { text, inTok, outTok: u.output_tokens ?? 0, stop: res.stop_reason ?? null };
 }
 
+const geminiCache = new Map<string, { name: string | null; expires: number }>();
+/** Explicit Gemini context cache for the large, repeated extraction system prompt (implicit caching does not
+ *  fire on systemInstruction). Cache-write ~1x on first use; reuse within TTL bills the prompt at ~0.25x.
+ *  Large systems only; safe fallback to inline on any error. */
+async function cachedSystemName(model: string, system: string): Promise<string | null> {
+  if (system.length < 5000) return null;
+  const key = model + ":" + createHash("sha256").update(system).digest("hex").slice(0, 16);
+  const now = Date.now();
+  const hit = geminiCache.get(key);
+  if (hit && hit.expires > now) return hit.name;
+  try {
+    const cache = await (geminiClient as unknown as { caches: { create: (a: unknown) => Promise<{ name?: string }> } }).caches.create({ model, config: { systemInstruction: system, ttl: "900s" } });
+    const name = cache.name ?? null;
+    geminiCache.set(key, { name, expires: now + 840_000 });
+    return name;
+  } catch { geminiCache.set(key, { name: null, expires: now + 120_000 }); return null; }
+}
+
 async function callGemini(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmResult, "usd" | "ms">> {
   geminiClient ??= new GoogleGenAI({ apiKey: requireEnv("geminiKey") });
+  const sys = req.system.join("\n\n");
+  const cacheName = await cachedSystemName(m.id, sys);
   const res = await geminiClient.models.generateContent({
     model: m.id,
     contents: req.user,
     config: {
-      systemInstruction: req.system.join("\n\n"),
+      ...(cacheName ? { cachedContent: cacheName } : { systemInstruction: sys }),
       responseMimeType: "application/json",
       responseJsonSchema: req.schema,
       maxOutputTokens: req.maxOutputTokens ?? 65_536,
