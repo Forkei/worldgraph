@@ -42,6 +42,7 @@ async function main() {
     case "audit": return auditCmd(sub ?? s("inv"));
     case "triage": return triage(sub ?? s("inv"));
     case "peers": return peers(sub ?? s("inv"), rest[0]);
+    case "serve": return serve();
     case "export-records": return exportRecords(rest[0] ?? sub);
     case "dispatch": return void (await dispatch(sub ?? s("inv")));
     case "run": return runLoop(sub ?? s("inv"));
@@ -102,6 +103,7 @@ async function main() {
   wg export-records <file.jsonl> export provisional records + cluster labels (for learned ER / TriBERTa)
   wg triage <inv> [--min-cos 0.86]   learned model proposes merge candidates name-blocking missed; judge confirms
   wg peers <inv> "<entity>"      nearest peers by embedding + facts they have that this entity lacks (learned gap-finding)
+  wg serve [--port 5590]         launch the local web UI (graph + dossier + run the loop from the browser)
   wg merges <inv>                entities assembled from several names; related-not-merged pairs
   wg candidates <inv>            open identity hypotheses (the uncertain band)
   wg decide <inv> <a> <b> same|not_same|related:<kind>
@@ -482,6 +484,15 @@ async function exportRecords(file?: string) {
   const multi = new Map<string, number>(); for (const r of rows) multi.set(r.entity_id, (multi.get(r.entity_id) ?? 0) + 1);
   const posEnts = [...multi.values()].filter((n) => n > 1).length;
   console.log(`wrote ${rows.length} records · ${invs} investigations · ${ents} entities (${posEnts} with ≥2 members = positive pairs) → ${file}`);
+}
+
+async function serve() {
+  const { spawn } = await import("node:child_process");
+  const port = s("port") ?? "5590";
+  console.log(`starting WorldGraph UI on http://localhost:${port} …`);
+  const isWin = process.platform === "win32";
+  const child = spawn(isWin ? "pnpm.cmd" : "pnpm", ["-s", "tsx", "apps/web/src/server.ts"], { cwd: process.cwd(), env: { ...process.env, WG_PORT: port }, stdio: "inherit" });
+  child.on("close", (c) => process.exit(c ?? 0));
 }
 
 async function peers(id?: string, ref?: string) {

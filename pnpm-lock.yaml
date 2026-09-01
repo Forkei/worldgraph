@@ -42,6 +42,18 @@ importers:
         specifier: workspace:*
         version: link:../../packages/plan
 
+  apps/web:
+    dependencies:
+      '@worldgraph/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@worldgraph/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@worldgraph/knowledge':
+        specifier: workspace:*
+        version: link:../../packages/knowledge
+
   packages/acquire:
     dependencies:
       '@mozilla/readability':
