@@ -138,7 +138,7 @@ async function investigate() {
   const reg = registry();
   const urlList = [...((flags.url as string[] | undefined) ?? [])];
   if (s("urls")) urlList.push(...readFileSync(s("urls")!, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#")));
-  if (!urlList.length) fail("give --urls file and/or --url");
+  // no URLs is fine for a new investigation — it will bootstrap from a web search on first `wg run`.
 
   let inv = s("inv") ? await getInvestigation(s("inv")!) : null;
   if (s("inv") && !inv) fail(`investigation ${s("inv")} not found`);
@@ -433,6 +433,18 @@ async function runLoop(id?: string) {
   const agentModel = getModel(s("agent-model") ?? "haiku-4-5");
   const useAgent = !b("scripted") && hasKeyFor(agentModel);
   let fetched = 0, spent = 0, stop = "";
+  // bootstrap: if the graph has no subject yet, seed it with a web search on the name
+  {
+    const g0 = await loadGraph(inv.id);
+    if (g0.entities.size === 0) {
+      console.log(`bootstrapping "${inv.seed.name}" from the web …`);
+      try {
+        const res = await serpApiSearch(inv.seed.name, { num: 8 }); spent += res.usd;
+        for (const h of res.hits.slice(0, 4)) { const r = await ingestUrl(inv.id, ctx, blobs, h.url, null); if (r.status === "fetched") fetched++; }
+        await rebuildCmd(inv.id);
+      } catch (e) { console.log(`bootstrap failed: ${String((e as Error).message).slice(0, 90)}`); }
+    }
+  }
   for (let pass = 1; pass <= maxPasses && !stop; pass++) {
    if (maxPasses > 1) console.log(`\n════ pass ${pass}/${maxPasses} ════`);
    const before = await investigationStats(inv.id);

@@ -86,7 +86,8 @@ async function callAnthropic(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmRes
   if (res.stop_reason === "refusal") throw new Error("refusal: " + JSON.stringify(res.stop_details ?? {}));
   const text = res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
   const u = res.usage;
-  const inTok = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+  // cost-effective input tokens: fresh ×1, cache write ×1.25, cache read ×0.1 (Anthropic pricing)
+  const inTok = Math.round((u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) * 1.25 + (u.cache_read_input_tokens ?? 0) * 0.1);
   return { text, inTok, outTok: u.output_tokens ?? 0, stop: res.stop_reason ?? null };
 }
 
@@ -129,15 +130,26 @@ export async function runToolLoop(
   const messages: { role: "user" | "assistant"; content: unknown }[] = [{ role: "user", content: opts.user }];
   const transcript: { role: string; text: string }[] = [];
   let usd = 0, toolCalls = 0, step = 0;
+  // cache the static prefix (system + tools) and roll a cache breakpoint onto the last message each turn, so a
+  // multi-step mission pays full price only for NEW tokens and cheap cache-reads for the growing history
+  // (instead of re-sending the whole conversation at full price every step).
+  const cachedTools = opts.tools.map((t, i) => (i === opts.tools.length - 1 ? { ...t, cache_control: { type: "ephemeral" as const } } : t));
+  const cacheLast = (msgs: { role: string; content: unknown }[]) => msgs.map((mm, i) => {
+    if (i !== msgs.length - 1) return mm;
+    const c = mm.content;
+    if (typeof c === "string") return { ...mm, content: [{ type: "text", text: c, cache_control: { type: "ephemeral" as const } }] };
+    if (Array.isArray(c) && c.length) { const cp = c.map((b) => ({ ...(b as object) })); (cp[cp.length - 1] as { cache_control?: unknown }).cache_control = { type: "ephemeral" }; return { ...mm, content: cp }; }
+    return mm;
+  });
   for (; step < maxSteps; step++) {
     const res = await anthropicClient.messages.stream({
       model: m.id, max_tokens: 8000,
       system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
-      tools: opts.tools as never, messages: messages as never,
+      tools: cachedTools as never, messages: cacheLast(messages) as never,
       ...(m.thinking ? { thinking: { type: "adaptive" } } : {}),
     } as never).finalMessage();
     const u = res.usage;
-    usd += costOf(m, (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0), u.output_tokens ?? 0);
+    usd += costOf(m, (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) * 1.25 + (u.cache_read_input_tokens ?? 0) * 0.1, u.output_tokens ?? 0);
     const say = res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
     if (say) { transcript.push({ role: "assistant", text: say }); opts.onStep?.(say); }
     messages.push({ role: "assistant", content: res.content });
