@@ -24,3 +24,7 @@ Thumbs.db
 
 # portable postgres binaries + local cluster (dev only)
 tools/
+
+# ML artifacts (regenerable from the graph)
+ml/records.jsonl
+ml/triberta-min/

@@ -139,6 +139,18 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     }
     merged.set(head.id, m);
   }
+  // serialize each provisional record (its own name + claims) for learned entity resolution (research 14).
+  // Uses relMap/attrMap while still provisional-keyed (before the canonical remap below); label = canonical id.
+  const provLines = new Map<string, string[]>();
+  for (const r of rel) { const src = relMap.get(r.id)!.src; const line = `${r.predicate}${r.predicate_specific ? ":" + r.predicate_specific : ""} ${r.object?.name ?? "?"}`; (provLines.get(src) ?? provLines.set(src, []).get(src)!).push(line); }
+  for (const a of attr) { const e = attrMap.get(a.id)!; (provLines.get(e) ?? provLines.set(e, []).get(e)!).push(`${a.key} = ${a.value}`); }
+  const provRecords = [...ents.values()].map((e) => {
+    const name = [...e.names.entries()].sort((x, y) => y[1] - x[1])[0]?.[0] ?? "?";
+    const keys = Object.entries(e.keys).flatMap(([k, vs]) => [...vs].map((v) => `${k}: ${v}`));
+    const lines = [...(provLines.get(e.id) ?? [])].slice(0, 40);
+    const record = [`${name} [${e.type}${e.kind ? "/" + e.kind : ""}]`, keys.join(" · "), lines.join("\n")].filter(Boolean).join("\n");
+    return { provisional_id: e.id, entity_id: canonicalOf.get(e.id)!, name, type: e.type, record };
+  });
   const provisionalCount = ents.size;
   ents.clear(); for (const [k, v] of merged) ents.set(k, v);
   for (const [cid, m] of relMap) relMap.set(cid, { src: canonicalOf.get(m.src)!, dst: canonicalOf.get(m.dst)! });
@@ -229,6 +241,8 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     for (const ce of claimEnts) await c.query(`INSERT INTO claim_entities (claim_id, claim_kind, role, entity_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [ce.claim_id, ce.claim_kind, ce.role, ce.entity_id]);
     // membership (the un-merge path) + slots that belonged to a now-merged provisional entity move to the canonical one
     await c.query(`DELETE FROM entity_members WHERE entity_id IN (SELECT id FROM entities WHERE investigation_id=$1)`, [investigationId]);
+    await c.query(`DELETE FROM provisional_records WHERE investigation_id=$1`, [investigationId]);
+    for (const pr of provRecords) await c.query(`INSERT INTO provisional_records (investigation_id, provisional_id, entity_id, name, type, record) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (investigation_id, provisional_id) DO UPDATE SET entity_id=EXCLUDED.entity_id, name=EXCLUDED.name, record=EXCLUDED.record, built_at=now()`, [investigationId, pr.provisional_id, pr.entity_id, pr.name, pr.type, pr.record]);
     for (const [root, members] of clusterMembers) {
       const head = canonicalOf.get(root)!;
       for (const x of members) {

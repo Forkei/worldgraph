@@ -40,6 +40,7 @@ async function main() {
     case "search": return search(sub ?? s("inv"), ...rest);
     case "question": return question(sub ?? s("inv"), ...rest);
     case "audit": return auditCmd(sub ?? s("inv"));
+    case "export-records": return exportRecords(rest[0] ?? sub);
     case "dispatch": return void (await dispatch(sub ?? s("inv")));
     case "run": return runLoop(sub ?? s("inv"));
     case "capabilities": case "caps": return capabilitiesCmd();
@@ -96,6 +97,7 @@ async function main() {
   wg ontology [predicates|types|keys]   the registry as the extractor sees it
   wg rebuild <inv>               claims → entities, links, attributes (graded), slots
   wg audit <inv> [--n 40]        measure extraction precision (does each claim's quote support it?)
+  wg export-records <file.jsonl> export provisional records + cluster labels (for learned ER / TriBERTa)
   wg merges <inv>                entities assembled from several names; related-not-merged pairs
   wg candidates <inv>            open identity hypotheses (the uncertain band)
   wg decide <inv> <a> <b> same|not_same|related:<kind>
@@ -464,6 +466,19 @@ async function runLoop(id?: string) {
   }
   console.log(`\n── done ── ${fetched} pages · $${spent.toFixed(3)}${stop ? `\nstopped: ${stop}` : ""}`);
   console.log(`wg dossier ${short(inv.id)} "${inv.seed.name}"`);
+}
+
+async function exportRecords(file?: string) {
+  if (!file) return fail("wg export-records <file.jsonl>");
+  const rows = await query<{ investigation_id: string; provisional_id: string; entity_id: string; name: string; type: string; record: string }>(
+    `SELECT investigation_id, provisional_id, entity_id, name, type, record FROM provisional_records ORDER BY investigation_id, entity_id`);
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  const invs = new Set(rows.map((r) => r.investigation_id)).size;
+  const ents = new Set(rows.map((r) => r.entity_id)).size;
+  const multi = new Map<string, number>(); for (const r of rows) multi.set(r.entity_id, (multi.get(r.entity_id) ?? 0) + 1);
+  const posEnts = [...multi.values()].filter((n) => n > 1).length;
+  console.log(`wrote ${rows.length} records · ${invs} investigations · ${ents} entities (${posEnts} with ≥2 members = positive pairs) → ${file}`);
 }
 
 async function auditCmd(id?: string) {
