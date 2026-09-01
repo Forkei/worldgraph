@@ -704,6 +704,9 @@ async function judge(id?: string) {
     console.log(`${tag}  ${a.name}  ↔  ${b.name}\n           ${v.reason}${v.decisive_evidence ? "  [" + v.decisive_evidence.slice(0, 120) + "]" : ""}`);
     // a judgment that read both files IS a merge reason (model v0.4 §5): it is recorded as a decision (method
     // llm), reversible by the owner. 'unsure' leaves the hypothesis open. The score only proposed the pair.
+    // "related" is only meaningful for organizations (manages/part_of/sibling). For two PEOPLE it's a category
+    // error — they are the same person or different people — so treat a person "related" as "unsure" (stay open).
+    if (v.verdict === "related" && a.type === "person" && b.type === "person") v.verdict = "unsure";
     if (v.verdict === "unsure") {
       await query(`UPDATE hypotheses SET evidence = evidence || $2::jsonb, updated_at=now() WHERE id=$1`, [h.id, JSON.stringify([{ kind: "llm", verdict: "unsure", reason: v.reason, at: new Date().toISOString() }])]);
       continue;
