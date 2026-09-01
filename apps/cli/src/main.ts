@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 // wg — WorldGraph CLI (M0): db migrate · investigate · investigations · stats · claims · source · proposed · sql
 import { parseArgs } from "node:util";
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync } from "node:fs";
 import { registry, getPolicy, env, uuidv7 } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
@@ -349,7 +349,9 @@ async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInv
   ];
 
   let finalVerdict = "partial", finalSummary = "";
-  const exec = async (name: string, input: Record<string, unknown>): Promise<string> => {
+  const traceFile = process.env.WG_TRACE || null;
+  const trace = (t: string) => { if (traceFile) appendFileSync(traceFile, t + "\n"); };
+  const rawExec = async (name: string, input: Record<string, unknown>): Promise<string> => {
     if (name === "search") {
       const q = String(input.query ?? ""); const eng = String(input.engine ?? "google");
       const capId = eng === "exa" ? "search.exa" : "search.serpapi.google";
@@ -383,6 +385,10 @@ async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInv
         } catch (e) { return "could not fetch: " + String((e as Error).message).slice(0, 120); }
       }
       if (!src.text) return "page had no readable text";
+      trace(`
+--- PAGE ${src.final_url ?? url} (${(src.text ?? "").length} chars text) ---
+${(src.text ?? "").slice(0, 1200)}
+--- end page head ---`);
       const { claims, usd: u, publisher_name, publisher_kind } = await extractClaimsOnly(ctx, src);
       usd += u;
       if (publisher_name) await setSourcePublisher(src.id, publisher_name, publisher_kind ?? "unknown");
@@ -410,9 +416,16 @@ async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInv
     if (name === "finish") { finalVerdict = String(input.verdict ?? "partial"); finalSummary = String(input.summary ?? ""); return "ok"; }
     return "unknown tool";
   };
+  const exec = async (name: string, input: Record<string, unknown>): Promise<string> => {
+    trace(`
+>>> TOOL ${name}(${JSON.stringify(input).slice(0, 300)})`);
+    const out = await rawExec(name, input);
+    trace(`<<< ${out.slice(0, 1400)}`);
+    return out;
+  };
 
   const system = `You are an OSINT mission agent working one lead for a larger investigation. Objective:\n\n${mission.objective}\n\nWork the objective and nothing else. Use search to find pages, read_url to inspect the promising ones (you choose which — do not read everything), and contribute only the claims that are relevant to THIS objective and clearly supported. Check graph_lookup before chasing something that may already be known. Read at most about ${per + 2} pages. When the objective is met or leads run out, call finish. Do not invent facts; every claim comes from a page you read.`;
-  const r = await runToolLoop(agentModel, { system, user: `Begin the mission: ${mission.objective}`, tools, exec, maxSteps: 20, onStep: (t) => { if (t) console.log("   · " + t.replace(/\s+/g, " ").slice(0, 150)); } });
+  const r = await runToolLoop(agentModel, { system, user: `Begin the mission: ${mission.objective}`, tools, exec, maxSteps: 20, onStep: (t) => { if (t) { console.log("   · " + t.replace(/\s+/g, " ").slice(0, 150)); trace("\n### REASONING: " + t); } } });
   usd += r.usd;
   return { verdict: finalVerdict, summary: finalSummary || r.finalText, trail, contributed, usd };
 }
