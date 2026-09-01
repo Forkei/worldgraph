@@ -1,4 +1,4 @@
-// Extractor v2: source text → chunks → model → validated, quote-gated, hierarchy-resolved, time-normalized
+// Extractor: source text → chunks → model → validated, registry-schema-checked, hierarchy-resolved, time-normalized
 // claims → DB. No confidence adjustments: the model's number is kept raw and never used for ranking.
 import { z } from "zod";
 import {
@@ -117,8 +117,12 @@ export function buildClaims(ctx: ExtractContext, source: SourceRow, chunk: Chunk
   const perItemCost = usd / Math.max(1, out.relations.length + out.attributes.length);
   const extractor = { model: ctx.model.id, prompt_version: pv, effort: ctx.model.effort ?? null, cost_usd: Number(perItemCost.toFixed(6)) };
   const refs = new Map(out.mentions.map((m) => [m.ref, m]));
+  // A true headline/title (not an entity): a promo verb WITH a money amount, or a " | Source" / " — " separator,
+  // or an absurdly long string. Kept precise so verbose-but-real names aren't dropped.
   const looksLikeHeadline = (name: string): boolean =>
-    name.split(/\s+/).length > 9 || /raises?|valued at|\$\d|announces?|\|\s*\w+$/i.test(name) || /[.:]\s/.test(name);
+    name.split(/\s+/).length > 14 ||
+    /\s[|]\s/.test(name) ||
+    (/(raises?|raised|valued|closes?|closed|announces?|launches?|unveils?|acquires?)/i.test(name) && /\$|billion|million/i.test(name));
   const mention = (ref: string, quote: string): Mention | null => {
     const m = refs.get(ref);
     if (!m) return null;
@@ -221,10 +225,10 @@ export async function extractClaimsOnly(ctx: ExtractContext, source: SourceRow):
     const page = { url: source.final_url ?? source.url, title: source.title, published_at: pageDate, chunk_index: chunk.index, chunk_count: chunks.length };
     let llm;
     try { llm = await callModel(ctx.model, { system, user: userPrompt(page, chunk.text), schema }); }
-    catch { continue; }
+    catch (e) { (ctx.log ?? (() => {}))(`  read_url chunk ${chunk.index}: model error: ${String((e as Error).message).slice(0, 160)}`); continue; }
     usd += llm.usd;
     let parsed: ExtractionOutput;
-    try { parsed = OutputSchema.parse(JSON.parse(llm.text)) as ExtractionOutput; } catch { continue; }
+    try { parsed = OutputSchema.parse(JSON.parse(llm.text)) as ExtractionOutput; } catch (e) { (ctx.log ?? (() => {}))(`  read_url chunk ${chunk.index}: bad output: ${String((e as Error).message).slice(0, 120)}`); continue; }
     if (!publisher_name && parsed.page.publisher_name) { publisher_name = parsed.page.publisher_name; publisher_kind = parsed.page.publisher_kind || "unknown"; }
     const assertedAt = pageDate ?? parseEdtf(parsed.page.published_at)?.lo ?? null;
     const { claims } = buildClaims(ctx, source, chunk, parsed, pv, llm.usd, seen, assertedAt);

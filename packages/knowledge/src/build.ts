@@ -1,6 +1,6 @@
 // Rebuild (INVESTIGATION_MODEL §1.4–1.7): claims + (later) decisions → entities, links, attributes, grades,
 // justifications, slots. Deterministic and idempotent: ids are stable hashes, so slots survive rebuilds.
-// M1.3 groups mentions by (type, normalized name); the real resolver (M1.5) replaces only that step.
+// Persons are provisional per source; the resolver clusters them. Reliability = publisher ladder; independence = origin key.
 import { query, withTx } from "@worldgraph/db";
 import { uuidv7 } from "@worldgraph/core";
 import { nameNorm, identityKeysFromHints, stableId } from "./normalize.ts";
@@ -67,12 +67,12 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     srcFacts.set(srow.id, { publisher_kind: srow.publisher_kind, publisher_entity_id: null, override_tier: ov, domain: srow.domain, publisher_name: srow.publisher_name });
   }
   const rows = await query<ClaimRow>(
-    `SELECT c.id, 'relation' AS kind, c.source_id, s.tier, c.attributed_to, c.span_method, c.subject, c.object, NULL::jsonb AS entity,
+    `SELECT c.id, 'relation' AS kind, c.source_id, NULL AS tier, c.attributed_to, c.span_method, c.subject, c.object, NULL::jsonb AS entity,
             c.predicate, c.predicate_specific, c.qualifiers, NULL AS key, NULL AS key_specific, NULL AS value, NULL AS value_norm, NULL AS datatype,
             c.temporal_kind, c.valid_from_lo, c.valid_from_hi, c.valid_to_lo, c.valid_to_hi, c.date_lo, c.date_hi, c.asserted_at
        FROM relation_claims c JOIN sources s ON s.id=c.source_id WHERE c.investigation_id=$1 AND c.status='raw'
      UNION ALL
-     SELECT c.id, 'attribute', c.source_id, s.tier, c.attributed_to, c.span_method, NULL, NULL, c.entity,
+     SELECT c.id, 'attribute', c.source_id, NULL, c.attributed_to, c.span_method, NULL, NULL, c.entity,
             NULL, NULL, NULL, c.key, c.key_specific, c.value, c.value_norm, c.datatype,
             c.temporal_kind, c.valid_from_lo, c.valid_from_hi, c.valid_to_lo, c.valid_to_hi, c.date_lo, c.date_hi, c.asserted_at
        FROM attribute_claims c JOIN sources s ON s.id=c.source_id WHERE c.investigation_id=$1 AND c.status='raw'`,
@@ -157,7 +157,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   for (const [cid, e] of attrMap) attrMap.set(cid, canonicalOf.get(e)!);
   for (const ce of claimEnts) ce.entity_id = canonicalOf.get(ce.entity_id)!;
 
-  // 1b. per-claim reliability: doc-kind prior, self-published-about-itself bump, learned adjustment, owner override
+  // 1b. per-claim reliability: the publisher ladder (authority/self/independent/platform/anonymous), owner override
   for (const f of srcFacts.values()) {
     if (!f.publisher_name) continue;
     const norm = nameNorm(f.publisher_name, "organization");
@@ -272,6 +272,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     // related pairs (manages / part_of / sibling) become DERIVED links between the canonical entities
     for (const r of res.related) {
       const kind = r.related_kind ?? "sibling";
+      if (kind === "namesake" || kind === "alias") continue;   // namesake = different people (no edge); alias = should be a merge, not a link
       const srcProv = (r.features.related_src as string | undefined) ?? r.a;
       const src = canonicalOf.get(srcProv)!, dst = canonicalOf.get(srcProv === r.a ? r.b : r.a)!;
       if (src === dst) continue;
@@ -364,6 +365,13 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
         }
       }
     }
+    // sweep orphan justifications: a link/attribute that existed in a prior rebuild but not this one leaves its
+    // justification behind (the per-rebuild delete only touches ids still present). Self-healing.
+    await c.query(`DELETE FROM justifications j WHERE
+        (j.derived_kind='link'      AND NOT EXISTS (SELECT 1 FROM links a       WHERE a.id=j.derived_id)) OR
+        (j.derived_kind='attribute' AND NOT EXISTS (SELECT 1 FROM attributes a  WHERE a.id=j.derived_id)) OR
+        (j.derived_kind='entity'    AND NOT EXISTS (SELECT 1 FROM entities a    WHERE a.id=j.derived_id)) OR
+        (j.derived_kind='slot'      AND NOT EXISTS (SELECT 1 FROM slots a       WHERE a.id=j.derived_id))`);
     (rebuildStatsHolder as { v: Partial<RebuildStats> }).v = { slots_open: slotsOpen, slots_found: slotsFound, holes };
   });
   const extra = (rebuildStatsHolder as { v: Partial<RebuildStats> }).v;

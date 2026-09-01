@@ -199,7 +199,7 @@ async function ingestUrl(invId: string, ctx: Parameters<typeof extractSource>[0]
         src = await insertSource({
           investigation_id: invId, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status,
           content_hash: hash, blob_key: key, text: r.text, link_table: r.link_table, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null,
-          meta: { attempts: r.attempts, links: r.links.length }, family_id: null, tier: null, tier_kind: null, snapshot_key: snapKey, captured_at: new Date(),
+          meta: { attempts: r.attempts, links: r.links.length }, tier: null, tier_kind: null, snapshot_key: snapKey, captured_at: new Date(),
         });
         status = "fetched";
         console.log(`${r.method} · ${r.text.length.toLocaleString()} chars · "${(r.title ?? "").slice(0, 50)}"`);
@@ -207,7 +207,7 @@ async function ingestUrl(invId: string, ctx: Parameters<typeof extractSource>[0]
     } catch (e) {
       const msg = String((e as Error).message).slice(0, 300);
       console.log(`FAILED\n         ${msg}`);
-      await insertSource({ investigation_id: invId, url, final_url: null, domain: safeHost(url), kind: "unknown", fetch_method: "http", http_status: null, content_hash: null, blob_key: null, text: null, link_table: [], title: null, published_at: null, lang: null, status: "failed", error: msg, meta: {}, family_id: null, tier: null, tier_kind: null, snapshot_key: null, captured_at: new Date() });
+      await insertSource({ investigation_id: invId, url, final_url: null, domain: safeHost(url), kind: "unknown", fetch_method: "http", http_status: null, content_hash: null, blob_key: null, text: null, link_table: [], title: null, published_at: null, lang: null, status: "failed", error: msg, meta: {}, tier: null, tier_kind: null, snapshot_key: null, captured_at: new Date() });
       return { status: "failed", src: null };
     }
   }
@@ -314,8 +314,7 @@ async function dispatch(id?: string) {
   const q = await ensureQuestion(inv, g);
   const subj = subjectOf(g, q, inv.seed.name);
   if (!subj) return fail("no subject entity in the graph yet — run an initial fetch first");
-  const minOrigins = Number((q.stop_rule as { min_independent_on?: string[] })?.min_independent_on ? 2 : 2);
-  const gaps = computeGaps(g, subj.id, q.indicators, minOrigins);
+  const gaps = computeGaps(g, subj.id, q.indicators, 2);   // corroboration target: >=2 independent origins
   const drafts = buildMissions(gaps);
   await saveMissions(inv.id, q.id, drafts);
   console.log(`subject: ${subj.name}  ·  ${q.indicators.length} indicators  ·  ${gaps.length} gaps → ${drafts.length} missions\n`);
@@ -366,7 +365,7 @@ async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInv
           if (dup) src = dup; else {
             const key = blobKey(inv.id, hash, r.raw_ext); blobs.put(key, r.raw);
             const snapKey = r.rendered ? blobKey(inv.id, hash, "snapshot.html") : null; if (snapKey && r.rendered) blobs.put(snapKey, r.rendered);
-            src = await insertSource({ investigation_id: inv.id, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status, content_hash: hash, blob_key: key, text: r.text, link_table: r.link_table, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null, meta: { attempts: r.attempts, links: r.links.length }, family_id: null, tier: null, tier_kind: null, snapshot_key: snapKey, captured_at: new Date() });
+            src = await insertSource({ investigation_id: inv.id, url, final_url: r.final_url, domain: safeHost(r.final_url), kind: r.kind, fetch_method: r.method, http_status: r.http_status, content_hash: hash, blob_key: key, text: r.text, link_table: r.link_table, title: r.title, published_at: r.published_at ? safeDate(r.published_at) : null, lang: r.lang, status: "fetched", error: null, meta: { attempts: r.attempts, links: r.links.length }, tier: null, tier_kind: null, snapshot_key: snapKey, captured_at: new Date() });
           }
         } catch (e) { return "could not fetch: " + String((e as Error).message).slice(0, 120); }
       }
@@ -529,7 +528,7 @@ registry hash ${reg.hash} · ${reg.extractablePredicates.length} extractable pre
 }
 
 async function tiers(pattern?: string, tier?: string) {
-  if (pattern && tier) { await setTier(pattern, tier.toUpperCase(), null, null); console.log(`override: ${pattern} → ${tier.toUpperCase()}`); }
+  if (pattern && tier) { await setTier(pattern, tier.toUpperCase(), null); console.log(`override: ${pattern} → ${tier.toUpperCase()}`); }
   const ov = await getTierRows();
   console.log(ov.length ? "owner overrides:" : "owner overrides: none");
   for (const r of ov) console.log(`  ${r.tier}  ${r.pattern}`);
@@ -851,9 +850,7 @@ async function whyCmd(id?: string, ref?: string) {
   if (w.judge?.length) { console.log("  judge:"); for (const j of w.judge) console.log(`    ${j.verdict.padEnd(9)} ${j.reason.slice(0, 140)}`); }
   if (w.claims.length) {
     console.log(`  ${w.claims.length} claim${w.claims.length === 1 ? "" : "s"} · ${w.origins} independent origin${w.origins === 1 ? "" : "s"}:`);
-    let lastOrigin = "";
     for (const c of w.claims) {
-      if (c.origin && c.origin !== lastOrigin) { console.log(`    origin ${short(c.origin)}`); lastOrigin = c.origin; }
       console.log(`      ${c.domain}${c.publisher_kind ? " [" + c.publisher_kind + "]" : ""}${c.asserted_at ? " " + c.asserted_at : ""}  ${c.text}`);
       console.log(`          “${c.quote.replace(/\s+/g, " ").slice(0, 200)}”`);
       console.log(`          ${c.url}`);
@@ -985,7 +982,7 @@ async function sources(id?: string) {
     const n = await query<{ rel: string; attr: string; rej: string }>(
       `SELECT (SELECT count(*) FROM relation_claims WHERE source_id=$1 AND status='raw') rel, (SELECT count(*) FROM attribute_claims WHERE source_id=$1 AND status='raw') attr,
               (SELECT count(*) FROM relation_claims WHERE source_id=$1 AND status='rejected')+(SELECT count(*) FROM attribute_claims WHERE source_id=$1 AND status='rejected') rej`, [r.id]);
-    console.log(`${short(r.id)}  ${r.status.padEnd(9)} ${r.fetch_method.padEnd(9)} ${(r.tier ?? "-").padEnd(2)}${(r.family_id ?? "").padEnd(18)} ${String((r as unknown as { text_len: number }).text_len ?? 0).padStart(7)} chars  ${n[0]!.rel}+${n[0]!.attr} claims (${n[0]!.rej} rej)  ${r.url}${r.error ? "  ! " + r.error.slice(0, 80) : ""}`);
+    console.log(`${short(r.id)}  ${r.status.padEnd(9)} ${r.fetch_method.padEnd(9)} ${(r.tier ?? "-").padEnd(2)} ${String((r as unknown as { text_len: number }).text_len ?? 0).padStart(7)} chars  ${n[0]!.rel}+${n[0]!.attr} claims (${n[0]!.rej} rej)  ${r.url}${r.error ? "  ! " + r.error.slice(0, 80) : ""}`);
   }
 }
 
