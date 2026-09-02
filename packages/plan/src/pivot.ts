@@ -183,13 +183,24 @@ export function harvestPivots(g: Graph, subjectId?: string | null): PivotSeed[] 
       for (const k of ["email", "domain", "handle"] as const) for (const v of s.keys[k] ?? []) push(k === "handle" ? "username" : k, v, "graph:subject");
       // the people and organizations bound to the subject structurally (owner, founder, members, subsidiaries) get the
       // full arsenal too: their names AND their handles/emails — this is the "deep dive on the owner"
-      const PRO = new Set(["works_at", "founded", "board_member", "member_of", "owns", "manages", "subsidiary_of", "controls", "part_of", "related_to", "spouse_of", "parent_of", "knows"]);
-      for (const l of [...(g.out.get(subjectId) ?? []), ...(g.inn.get(subjectId) ?? [])]) {
-        if (!PRO.has(l.predicate)) continue;
+      const PRO = new Set(["works_at", "founded", "board_member", "member_of", "owns", "manages", "subsidiary_of", "controls", "part_of", "related_to", "spouse_of", "parent_of", "knows", "uses_account"]);
+      // when the subject is an account (a domain seed), the org/person that owns or uses it is the real subject:
+      // walk one hop to those anchors, then harvest the people and orgs bound to each anchor
+      const anchors = new Set<string>([subjectId]);
+      if (s.type === "account") for (const l of [...(g.out.get(subjectId) ?? []), ...(g.inn.get(subjectId) ?? [])]) {
         const other = g.entities.get(l.src === subjectId ? l.dst : l.src);
-        if (!other || (other.type !== "organization" && other.type !== "person")) continue;
-        push(other.type === "organization" ? "org" : "name", other.name, `graph:${l.predicate}`);
-        for (const k of ["email", "domain", "handle"] as const) for (const v of other.keys[k] ?? []) push(k === "handle" ? "username" : k, v, `graph:${l.predicate}`);
+        if (other && (other.type === "organization" || other.type === "person") && ["owns", "uses_account", "part_of", "controls"].includes(l.predicate)) anchors.add(other.id);
+      }
+      for (const a of anchors) {
+        const an = g.entities.get(a)!;
+        if (a !== subjectId) { push(an.type === "organization" ? "org" : "name", an.name, "graph:anchor"); for (const k of ["email", "domain", "handle"] as const) for (const v of an.keys[k] ?? []) push(k === "handle" ? "username" : k, v, "graph:anchor"); }
+        for (const l of [...(g.out.get(a) ?? []), ...(g.inn.get(a) ?? [])]) {
+          if (!PRO.has(l.predicate)) continue;
+          const other = g.entities.get(l.src === a ? l.dst : l.src);
+          if (!other || (other.type !== "organization" && other.type !== "person")) continue;
+          push(other.type === "organization" ? "org" : "name", other.name, `graph:${l.predicate}`);
+          for (const k of ["email", "domain", "handle"] as const) for (const v of other.keys[k] ?? []) push(k === "handle" ? "username" : k, v, `graph:${l.predicate}`);
+        }
       }
     }
   }

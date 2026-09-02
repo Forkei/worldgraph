@@ -67,6 +67,7 @@ function hardKeyRelation(a: Provisional, b: Provisional): "match" | "conflict" |
     if (!ka.length || !kb.length) continue;
     if (ka.some((v) => kb.includes(v))) return "match";
     if (k === "email" || k === "licence" || k === "registry_id" || k === "orcid" || k === "docket") out = "conflict";
+    if (k === "identifier" && a.type === "account" && b.type === "account") out = "conflict";   // an account IS its identifier (two IPs are two accounts)
   }
   // two organizations on different registrable domains are different organizations (a company has one primary web
   // identity; a person may have many emails, so this rule is org-only)
@@ -216,6 +217,7 @@ export function resolve(ents: Provisional[], decisions: Decision[]): ResolveResu
   const conflicts = (ra: string, rb: string) => {
     const ka = clusterKeys(ra), kb = clusterKeys(rb);
     if (["email", "licence", "registry_id", "orcid", "docket"].some((k) => ka[k] && kb[k] && ![...ka[k]!].some((v) => kb[k]!.has(v)) && ka[k]!.size && kb[k]!.size)) return true;
+    if (typeOf.get(ra) === "account" && typeOf.get(rb) === "account" && ka.identifier && kb.identifier && ![...ka.identifier].some((v) => kb.identifier!.has(v))) return true;
     // organizations: disjoint registrable domains conflict unless some other identifier is shared
     if (typeOf.get(ra) === "organization" && typeOf.get(rb) === "organization") {
       const shared = HARD_KEYS.some((k) => ka[k] && kb[k] && [...ka[k]!].some((v) => kb[k]!.has(v)));
