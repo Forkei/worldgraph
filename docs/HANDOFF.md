@@ -133,3 +133,20 @@ Live investigations from tonight (delete with `wg forget`): `01a05fdd` "PIVOT-TE
 - `people.relatives` (WikiTree) shape still assumed; `media.exif` needs the exiftool binary; free-tier quotas are
   the real constraint — cache-first is core.
 - `wg sql` needs full UUIDs (prefixes fail); join through `investigations` with `id::text LIKE '01a05ff7%'`.
+
+## 7. Addendum — the maintainer's review of the examplerealm case file (same night)
+He spotted three things in the published page; all three are fixed and committed (`89bac3d`):
+1. **Same-name fusion.** examplerealm.com (a coaching site) and examplerealm.online (the Minecraft server) merged into
+   one "Example Realm" because organizations grouped by normalized name at build time, before the resolver.
+   Now: organizations are provisional per identity key (registrable domain, else registry id); different registrable
+   domains **conflict** (org-only), same registrable domain **matches** (investors.palantir.com = palantir.com);
+   keyless same-name mentions attach only when exactly one keyed record carries that name, otherwise they stay
+   their own record and the judge gets a hypothesis per side. Verified on the live graph: three records, 24
+   hypotheses for the judge. The same principle should be extended to places/events later (still name-grouped).
+2. **No deep dive on the owner.** Alex Sample ("Alexh", itch.io) and the other members were reached only via
+   `member_of`/`founded` edges the indicators didn't name. Now: anyone bound *structurally* to the subject is
+   reached (family edges excluded per his 2026-09-01 steer), indicators then decide what to look for; the pivot
+   harvest also fires the arsenal on those people's names and handles.
+3. **Sources not visible.** The OnlyFans "account" came from a WhatsMyName probe of `@example.realm` — a catch-all
+   page false positive. Now: a profile must echo the username to count; the `@` is stripped; the page shows source
+   chips on every row plus a Sources sheet.
