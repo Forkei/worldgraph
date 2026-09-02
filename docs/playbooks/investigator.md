@@ -147,6 +147,9 @@ Workflow:
 - Annotate what you concluded and why, so the next reader (human or agent) can follow.
 - Run `rebuild` after a batch of contributions and `judge` when identity hypotheses have accumulated; read the
   result and correct it.
+- Before you finish, run `graph_duplicates` and settle every group: the same person under two spellings, a
+  brand and its legal entity, a handle and its person. `same_as` needs a quote; `not_same_as` needs a reason.
+  A graph that shows one person twice is not finished.
 
 ## stopping
 

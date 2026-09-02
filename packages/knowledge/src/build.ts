@@ -294,6 +294,28 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
       await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('link',$1,$2) ON CONFLICT DO NOTHING`, [id, JSON.stringify([{ kind: "rule", id: `resolver:name_structure:${kind}` }, { kind: "entity", id: src }, { kind: "entity", id: dst }])]);
     }
 
+    // a person whose handle key equals an account's identifier owns that account: a DERIVED uses_account link, so the
+    // account node hangs off its person instead of floating (the claim-backed link replaces it if a page states it)
+    {
+      const accounts = [...merged.values()].filter((e) => e.type === "account" && ["username", "handle", "email"].includes(e.kind ?? ""));
+      const persons = [...merged.values()].filter((e) => e.type === "person");
+      for (const acc of accounts) {
+        const ids = new Set([...(acc.keys.identifier ?? new Set<string>())].map((v) => v.toLowerCase().replace(/^@/, "")));
+        if (!ids.size) continue;
+        for (const person of persons) {
+          const handles = [...(person.keys.handle ?? new Set<string>()), ...(person.keys.email ?? new Set<string>())].map((v) => v.toLowerCase().replace(/^@/, ""));
+          if (!handles.some((h) => ids.has(h))) continue;
+          const id = stableId(investigationId, "link", person.id, "uses_account", "derived:handle", acc.id);
+          await c.query(
+            `INSERT INTO links (id, investigation_id, src_id, predicate, predicate_specific, dst_id, qualifiers, claim_ids, evidence_count, independent_origins, primary_origins, tier_best, contested, reliability, credibility, grade, derived, derivation)
+             VALUES ($1,$2,$3,'uses_account','derived:handle',$4,'{}','{}',0,0,0,'F',false,'F',6,'unverified',true,'resolver:handle_match') ON CONFLICT DO NOTHING`,
+            [id, investigationId, person.id, acc.id],
+          );
+          await c.query(`INSERT INTO justifications (derived_kind, derived_id, supports) VALUES ('link',$1,$2) ON CONFLICT DO NOTHING`, [id, JSON.stringify([{ kind: "rule", id: "resolver:handle_match" }, { kind: "entity", id: person.id }, { kind: "entity", id: acc.id }])]);
+        }
+      }
+    }
+
     for (const g of linkAgg.values()) {
       const p = profile(g, false), gr = grade(p), t = timeAgg(g.rows);
       const quals: Record<string, string> = {}, firstBy: Record<string, string> = {}, conflicts: Record<string, { value: string; claim_ids: string[] }[]> = {};

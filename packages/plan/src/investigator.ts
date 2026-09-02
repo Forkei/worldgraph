@@ -118,6 +118,7 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
     { name: "graph_contested", description: "Facts with conflicting evidence (optionally for one entity).", input_schema: { type: "object", properties: { ref: { type: "string" } } } },
     { name: "graph_gaps", description: "What the Question's indicators still lack on the subject and its neighbours, ranked — a suggestion list, not orders.", input_schema: { type: "object", properties: { limit: { type: "integer" } } } },
     { name: "graph_sql", description: "Read-only SQL over this investigation's graph tables (entities, links, attributes, relation_claims, attribute_claims, sources, notes, hypotheses, decisions). SELECT only; an investigation_id filter is added for you where the table has one. Use for anything the other graph tools don't cover.", input_schema: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] } },
+    { name: "graph_duplicates", description: "Groups of entities that look like the same thing: same name, one name inside another (kim / halokim), a shared handle between a person and an account, or a person and an account with the same handle. Resolve each group with same_as (quote) / not_same_as (reason) before you finish.", input_schema: { type: "object", properties: {} } },
     { name: "why", description: "The evidence behind a link or attribute id (from graph_lookup): claims, quotes, sources, publisher kinds, independent origins.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["link", "attribute", "entity"] }, id: { type: "string" } }, required: ["kind", "id"] } },
     { name: "link", description: "Assert a relationship yourself, backed by a verbatim quote from a page you read: subject —predicate→ object. Use an ontology predicate (works_at, owns, member_of, founded, controls, located_in, uses_account, party_to, paid, knows, spouse_of, …) or a candidate label. Types: person|organization|place|account|document|legal_matter|event|asset.", input_schema: { type: "object", properties: { subject: { type: "string" }, subject_type: { type: "string" }, predicate: { type: "string" }, object: { type: "string" }, object_type: { type: "string" }, url: { type: "string" }, quote: { type: "string" }, from: { type: "string", description: "start date (EDTF) if any" }, to: { type: "string" }, qualifiers: { type: "object", additionalProperties: { type: "string" } } }, required: ["subject", "subject_type", "predicate", "object", "object_type", "url", "quote"] } },
     { name: "attribute", description: "Assert an attribute yourself with a quote: entity · key = value (keys: aliases, description, status, date_of_birth, nationality, occupation, website, registry_id (scheme:value), address, founded_on, …).", input_schema: { type: "object", properties: { entity: { type: "string" }, entity_type: { type: "string" }, key: { type: "string" }, value: { type: "string" }, url: { type: "string" }, quote: { type: "string" } }, required: ["entity", "entity_type", "key", "value", "url", "quote"] } },
@@ -249,6 +250,26 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
           return rows.length ? JSON.stringify(rows.slice(0, 200)).slice(0, 10_000) : "no rows";
         } catch (e) { return "sql error: " + String((e as Error).message).slice(0, 300); }
       }
+      case "graph_duplicates": {
+        const g = await graph(true);
+        const all = [...g.entities.values()].filter((e) => e.type === "person" || e.type === "organization" || e.type === "account");
+        const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        const groups: string[][] = [];
+        const seen = new Set<string>();
+        const add = (xs: GEntity[], why: string) => { const key = xs.map((x) => x.id).sort().join("|"); if (xs.length < 2 || seen.has(key)) return; seen.add(key); groups.push([why, ...xs.map((x) => `${x.name} [${x.type}${x.kind ? "/" + x.kind : ""}] entity:${short(x.id)} ${x.claim_count}c${Object.keys(x.keys).length ? " keys " + Object.entries(x.keys).map(([k, v]) => k + "=" + v.join(",")).join(" ") : ""}`)]); };
+        const byName = new Map<string, GEntity[]>();
+        for (const e of all) { const k = `${e.type}|${norm(e.name)}`; (byName.get(k) ?? byName.set(k, []).get(k)!).push(e); }
+        for (const [k, xs] of byName) if (xs.length > 1) add(xs, `same name (${k.split("|")[0]})`);
+        const compact = (e: GEntity) => norm(e.name).replace(/ /g, "");
+        for (const a of all) { const ca = compact(a); if (ca.length < 4 || ca.length > 12 || norm(a.name).includes(" ")) continue; for (const b of all) { if (a === b || a.type !== b.type) continue; const cb = compact(b); if (cb.length > ca.length && cb.includes(ca)) add([a, b], "name contained in name"); } }
+        const persons = all.filter((e) => e.type === "person"), accounts = all.filter((e) => e.type === "account");
+        for (const p of persons) { const hs = new Set([...(p.keys.handle ?? []), ...(p.keys.email ?? [])].map((v) => v.toLowerCase().replace(/^@/, ""))); if (!hs.size) continue;
+          for (const q of persons) if (q !== p && [...(q.keys.handle ?? []), ...(q.keys.email ?? [])].some((v) => hs.has(v.toLowerCase().replace(/^@/, "")))) add([p, q], "shared handle/email");
+          for (const acc of accounts) if ((acc.keys.identifier ?? []).some((v) => hs.has(v.toLowerCase().replace(/^@/, "")))) add([p, acc], "person owns this account (linked by handle; fine to leave as two nodes)"); }
+        if (!groups.length) return "no duplicate-looking groups";
+        const NL = String.fromCharCode(10);
+        return groups.map((gr) => `• ${gr[0]}${NL}    ${gr.slice(1).join(NL + "    ")}`).join(NL);
+      }
       case "why": {
         const g = await graph(); const kind = S("kind") as "link" | "attribute" | "entity"; let id = S("id");
         if (id.length < 36) { const pool = kind === "link" ? g.links.map((l) => l.id) : kind === "attribute" ? g.attributes.map((a) => a.id) : [...g.entities.keys()]; id = pool.find((x) => x.startsWith(id)) ?? id; }
@@ -365,6 +386,8 @@ ${inventory}
 How to work: read consult_playbook("investigator/method") first, then the playbook section for this case type (person case / organization case / domain case) and "search/strategy". Keep a plan and a hypothesis board; write notes as you go (your transcript is trimmed, the notebook and the graph are your memory). Chase every lead; the people bound to the subject (owner, founder, members) get their own deep dive. Go past page 1 of searches, rotate engines, use operators. Run connectors on every identifier you find. Read pages; snippets are not evidence.
 
 The graph's rules (they protect the truth of what you build): every fact needs a source you read and a verbatim quote; a name is never identity — join entities only with same_as + quote or a shared identifier, and split what the build fused wrongly; grades come from who published, not from you; every edit you make is recorded and reversible, so act, then correct. Reading only: never log in, never use leaked credentials, never touch systems.
+
+Before finishing: rebuild, then call graph_duplicates and resolve every group — same_as with a quote when they are one thing, not_same_as with a reason when they are not; a graph with the same person twice is not done. Then judge, then rebuild again.
 
 Finish only when the stopping bar (consult_playbook("investigator/stopping")) is met, with a full report (consult_playbook("investigator/report")), or when the run is ending.`;
 
