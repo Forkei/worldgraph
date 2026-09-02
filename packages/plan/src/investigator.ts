@@ -46,8 +46,14 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
   let graphCache: { g: Graph; at: number } | null = null;
   const graph = async (fresh = false) => { if (fresh || !graphCache || Date.now() - graphCache.at > 20_000) graphCache = { g: await loadGraph(inv.id), at: Date.now() }; return graphCache.g; };
   const findEnt = (g: Graph, ref: string): GEntity | undefined => {
-    const q = ref.trim().toLowerCase();
-    return [...g.entities.values()].find((e) => e.id === ref || e.id.startsWith(ref)) ?? [...g.entities.values()].find((e) => e.name.toLowerCase() === q) ?? [...g.entities.values()].find((e) => e.aliases.some((a) => a.toLowerCase() === q)) ?? [...g.entities.values()].filter((e) => e.name.toLowerCase().includes(q)).sort((a, b) => b.claim_count - a.claim_count)[0];
+    const raw = ref.trim().replace(/^(entity|link|attr|attribute):/i, "");
+    const q = raw.toLowerCase();
+    const all = [...g.entities.values()];
+    const byClaims = (xs: GEntity[]) => xs.sort((a, b) => b.claim_count - a.claim_count)[0];
+    return all.find((e) => e.id === raw || (raw.length >= 6 && e.id.startsWith(raw)))
+      ?? byClaims(all.filter((e) => e.name.toLowerCase() === q))
+      ?? byClaims(all.filter((e) => e.aliases.some((a) => a.toLowerCase() === q)))
+      ?? byClaims(all.filter((e) => e.name.toLowerCase().includes(q)));
   };
   const dossier = (g: Graph, e: GEntity, limit = 40): string => {
     const out = (g.out.get(e.id) ?? []), inn = (g.inn.get(e.id) ?? []), at = g.attrsOf.get(e.id) ?? [];
@@ -194,7 +200,12 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
         const p = result.provenance;
         return [`${id}(${value}) → ${p.source} · grade ${p.grade}${p.note ? " · note: " + p.note : ""}`, landed || "no facts", ...result.entities.slice(0, 12).map((e) => `  • ${e.name} [${e.type}${e.kind ? "/" + e.kind : ""}]`), ...result.edges.slice(0, 20).map((e) => `  → ${e.subject} —${e.predicate}→ ${e.object}${e.at ? " (" + e.at + ")" : e.from ? " (" + e.from + "→" + (e.to ?? "") + ")" : ""}${e.value ? " =" + e.value : ""}`), ...result.attributes.slice(0, 15).map((a) => `  · ${a.entity}: ${a.key} = ${a.value}`), result.pivots.length ? `  pivots: ${result.pivots.slice(0, 20).map((pv) => `${pv.kind}:${pv.value}${pv.weak ? "~" : ""}`).join("  ")}` : ""].filter(Boolean).join("\n");
       }
-      case "graph_lookup": { const g = await graph(); const e = findEnt(g, S("ref")); return e ? dossier(g, e) : `"${S("ref")}" is not in the graph (${g.entities.size} entities). Try graph_sql: SELECT canonical_name, type FROM entities WHERE canonical_name ILIKE '%…%'`; }
+      case "graph_lookup": {
+        const g = await graph(); const e = findEnt(g, S("ref"));
+        if (!e) return `"${S("ref")}" is not in the graph (${g.entities.size} entities). Try graph_sql: SELECT canonical_name, type FROM entities WHERE canonical_name ILIKE '%…%'`;
+        const same = [...g.entities.values()].filter((x) => x.id !== e.id && x.name.toLowerCase() === e.name.toLowerCase());
+        return dossier(g, e) + (same.length ? `\n\nOTHER ENTITIES WITH THIS NAME (kept apart on purpose — different identifiers; use same_as/not_same_as if you can tell): ` + same.map((x) => `${x.name} [${x.type}${x.kind ? "/" + x.kind : ""}] entity:${short(x.id)} ${x.claim_count} claims${Object.keys(x.keys).length ? " keys " + Object.entries(x.keys).map(([k, v]) => k + "=" + v.join(",")).join(" ") : ""}`).join("; ") : "");
+      }
       case "graph_ego": {
         const g = await graph(); const e = findEnt(g, S("ref")); if (!e) return "not in the graph";
         const sub = ego(g, e.id, Math.min(3, Number(input.hops ?? 1)), { limit: 60, ...(S("predicate") ? { predicates: [S("predicate")] } : {}) } as never);
