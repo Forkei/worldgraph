@@ -11,7 +11,7 @@ import {
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, CAP_RUNNERS, type SearchResult, type PivotKind } from "@worldgraph/acquire";
 import { exportHtml } from "./exportHtml.ts";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, buildClaims, type Side } from "@worldgraph/extract";
-import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers, runPivots, harvestPivots, seedPivots, type PivotSeed } from "@worldgraph/plan";
+import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers, runPivots, harvestPivots, seedPivots, runInvestigator, type PivotSeed } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -25,7 +25,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, out: { type: "string" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, out: { type: "string" }, ceiling: { type: "string" }, steps: { type: "string" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -52,6 +52,7 @@ async function main() {
     case "cap": return capCmd(sub, rest);
     case "pivot": return pivotCmd(sub ?? s("inv"), ...rest);
     case "export-html": return exportHtmlCmd(sub ?? s("inv"));
+    case "agent": return agentCmd(sub ?? s("inv"));
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
     case "claims": return claims(sub ?? s("inv"));
@@ -255,6 +256,29 @@ async function capCmd(id?: string, args: string[] = []) {
   for (const e of r.edges.slice(0, 10)) console.log(`  → ${e.subject}  —${e.predicate}→  ${e.object}${e.at ? `  (${e.at})` : ""}${e.value ? `  =${e.value}` : ""}`);
   for (const a of r.attributes.slice(0, 8)) console.log(`  · ${a.entity}: ${a.key} = ${a.value}`);
   if (r.pivots.length) console.log(`\n  pivots: ${r.pivots.slice(0, 15).map((pv) => `${pv.kind}:${pv.value}${pv.weak ? "~" : ""}`).join("  ")}`);
+}
+
+// `wg agent <inv> [--agent-model sonnet-5] [--ceiling usd] [--steps 600]` — the investigator: one agent in full
+// control (search, read, connectors, graph read/write, rebuild, judge) until it decides the case is done.
+async function agentCmd(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg agent <inv> [--agent-model sonnet-5] [--ceiling usd] [--steps 600]");
+  const model = getModel(s("model") ?? DEFAULT_MODEL);
+  if (!hasKeyFor(model)) return fail(`no API key for ${model.label} (extractor)`);
+  const agentModel = getModel(s("agent-model") ?? "sonnet-5");
+  if (!hasKeyFor(agentModel)) return fail(`no API key for ${agentModel.label}`);
+  const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model, policy: getPolicy(inv.policy ?? "unrestricted"), registry: registry(), log: () => {} };
+  const traceFile = process.env.WG_TRACE || null;
+  console.log(`investigator on "${inv.seed.name}" · ${agentModel.label} · ${s("ceiling") ? "ceiling $" + s("ceiling") : "no ceiling"}\n`);
+  const t0 = Date.now();
+  const r = await runInvestigator(inv, {
+    ctx, model: agentModel, ceilingUsd: s("ceiling") ? Number(s("ceiling")) : undefined, maxSteps: s("steps") ? Number(s("steps")) : undefined,
+    log: (m) => console.log(m), trace: (t) => { if (traceFile) appendFileSync(traceFile, t + "\n"); },
+    rebuild: async () => { const st = await rebuild(inv.id, { currentPromptVersion: promptVersion(registry()) }); return `rebuilt: ${st.claims} claims → ${st.entities} entities · ${st.links} links · ${st.attributes} attributes · ${st.hypotheses} open identity hypotheses`; },
+    judge: async () => { await judge(inv.id); const st = await investigationStats(inv.id); return `judged; graph now ${st.relations} relations · ${st.attributes} attributes`; },
+  });
+  console.log(`\n══ report (${r.steps} steps · ${r.toolCalls} tool calls · $${r.usd.toFixed(2)} · ${Math.round((Date.now() - t0) / 60000)} min)${r.stopped ? " · stopped: " + r.stopped : ""} ══\n\n${r.report}\n`);
+  console.log(`wg export-html ${short(inv.id)} --out case.html`);
 }
 
 // `wg export-html <inv> [--out file]` — standalone shareable case-file page (graph + dossiers + evidence).

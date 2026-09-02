@@ -146,11 +146,12 @@ export interface ToolLoopResult { finalText: string; usd: number; steps: number;
  */
 export async function runToolLoop(
   m: ModelSpec,
-  opts: { system: string; user: string; tools: ToolDef[]; exec: (name: string, input: Record<string, unknown>) => Promise<string>; maxSteps?: number; onStep?: (note: string) => void },
+  opts: { system: string; user: string; tools: ToolDef[]; exec: (name: string, input: Record<string, unknown>) => Promise<string>; maxSteps?: number; onStep?: (note: string) => void; onTool?: (name: string, input: Record<string, unknown>, output: string, usd: number) => void; /** stop the loop from outside (e.g. a cost ceiling) — return a reason */ shouldStop?: () => string | null; maxToolChars?: number; keepRecent?: number },
 ): Promise<ToolLoopResult> {
   if (m.provider !== "anthropic") throw new Error("runToolLoop currently supports Anthropic models only");
   anthropicClient ??= new Anthropic({ apiKey: requireEnv("anthropicKey") });
   const maxSteps = opts.maxSteps ?? 24;
+  let trimmedUpTo = 0;
   const messages: { role: "user" | "assistant"; content: unknown }[] = [{ role: "user", content: opts.user }];
   const transcript: { role: string; text: string }[] = [];
   let usd = 0, toolCalls = 0, step = 0;
@@ -186,9 +187,26 @@ export async function runToolLoop(
       let out: string;
       try { out = await opts.exec(tu.name, tu.input ?? {}); }
       catch (e) { out = "ERROR: " + String((e as Error).message).slice(0, 300); }
-      results.push({ type: "tool_result", tool_use_id: tu.id, content: out.slice(0, 12_000) });
+      opts.onTool?.(tu.name, tu.input ?? {}, out, usd);
+      results.push({ type: "tool_result", tool_use_id: tu.id, content: out.slice(0, opts.maxToolChars ?? 12_000) });
     }
+    const stopReason = opts.shouldStop?.();
+    if (stopReason) { (results[results.length - 1] as { content: string }).content += `\n\n[RUN ENDING: ${stopReason}. Call finish now with your report.]`; }
     messages.push({ role: "user", content: results });
+    // context management for long runs: tool results older than `keepRecent` turns shrink to a stub. The agent's
+    // durable memory is the graph + its notebook, which it can re-read; the transcript only needs to stay coherent.
+    // Trim in batches (every ~10 turns), not every step: the cached prefix stays byte-stable between batches.
+    const keep = opts.keepRecent ?? 16;
+    const cutoff = messages.length - keep * 2;
+    if (cutoff - trimmedUpTo >= 20) {
+      for (let i = Math.max(1, trimmedUpTo); i < cutoff; i++) {
+        const m = messages[i]!;
+        if (m.role !== "user" || !Array.isArray(m.content)) continue;
+        m.content = (m.content as { type: string; content?: string; tool_use_id?: string }[]).map((b) =>
+          b.type === "tool_result" && typeof b.content === "string" && b.content.length > 400 ? { ...b, content: b.content.slice(0, 300) + " …[older result trimmed; re-run the tool or read your notebook if you need it]" } : b);
+      }
+      trimmedUpTo = cutoff;
+    }
   }
   return { finalText: "(stopped: max steps reached)", usd, steps: step, toolCalls, transcript };
 }

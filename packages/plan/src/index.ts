@@ -5,3 +5,4 @@ export * from "./missions.ts";
 export * from "./triage.ts";
 export * from "./pivot.ts";
 export * from "./playbook.ts";
+export * from "./investigator.ts";
