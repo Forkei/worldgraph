@@ -146,7 +146,7 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
     <div class="pane on" id="p-graph">
       <div id="stage">
         <canvas id="c"></canvas>
-        <div id="gtools"><input id="find" placeholder="Find an entity…" autocomplete="off"><button id="btn-fit">Fit</button></div>
+        <div id="gtools"><input id="find" placeholder="Find an entity…" autocomplete="off"><button id="btn-refresh" title="reload the graph">↻</button><button id="btn-fit">Fit</button></div>
         <div id="legend"></div>
         <div id="sheet"><div class="grip"></div><div class="hd"><div class="grow"><h2 id="sh-name"></h2><div class="type" id="sh-type"></div><div class="keys mono" id="sh-keys"></div></div><button class="ghost" id="sh-close" aria-label="close">✕</button></div><div id="sbody"></div></div>
       </div>
@@ -162,7 +162,8 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
       <div class="body pad">
         <div class="form" style="margin-bottom:12px">
           <div class="row2"><label>Ceiling ($)<input id="run-ceiling" type="number" inputmode="decimal" value="3" min="0.5" step="0.5"></label><label>Model<select id="run-model"><option value="sonnet-5">Sonnet 5</option><option value="sonnet-5-medium">Sonnet 5 (medium)</option><option value="haiku-4-5">Haiku 4.5</option><option value="opus-5">Opus 5</option></select></label></div>
-          <button class="primary" id="run-go">Start the investigator</button>
+          <div style="display:flex;gap:8px;align-items:center"><button class="primary" id="run-go">Start the investigator</button><button id="run-stop" hidden>Stop</button></div>
+          <div class="stat" id="run-status"></div>
         </div>
         <div class="log" id="run-log"></div>
       </div>
@@ -180,10 +181,28 @@ const GRADES = ["established","corroborated","single_source","unverified","dispu
 const GLABEL = {established:"established",corroborated:"corroborated",single_source:"single source",unverified:"unverified",disputed:"disputed"};
 const typeVar = (t) => "--" + (TYPES.includes(t) ? t : "other");
 async function api(u, opt) { const r = await fetch(u, opt); if (!r.ok) throw new Error(await r.text()); return r.json(); }
+const post = (u, body) => api(u, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
 const md = (t) => esc(t).replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
+
+/* ---------- jobs: a run lives on the server; the page only watches it ---------- */
+const watching = new Map();   // jobId → { abort }
+function watchJob(jobId, onLine, onDone, from = 0) {
+  if (watching.has(jobId)) return;
+  const ctl = new AbortController(); watching.set(jobId, ctl);
+  fetch(`/api/job/${jobId}/stream?from=${from}`, { signal: ctl.signal }).then(async (r) => {
+    const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); const parts = buf.split("\n\n"); buf = parts.pop();
+      for (const p of parts) { const ev = /event: (\w+)/.exec(p), dm = /data: (.*)/s.exec(p); if (!dm) continue; const data = JSON.parse(dm[1]);
+        if (ev && ev[1] === "done") { watching.delete(jobId); onDone?.(data); } else onLine(data); } }
+    watching.delete(jobId);
+  }).catch(() => { watching.delete(jobId); });
+}
+function stopWatching() { for (const c of watching.values()) c.abort(); watching.clear(); }
+function appendLog(el, t) { const line = document.createElement("div"); if (/^\s*·/.test(t)) line.className = "agent"; else if (/^\s*▸/.test(t)) line.className = "tool"; line.textContent = t; el.appendChild(line); const body = el.closest(".body"); if (body) body.scrollTop = body.scrollHeight; }
 
 /* ---------- routing ---------- */
-let INV = null, META = null, live = 0;
+let INV = null, META = null;
 function show(id) { document.querySelectorAll(".screen").forEach((s) => s.classList.toggle("on", s.id === "s-" + id)); }
 document.querySelectorAll("[data-go]").forEach((b) => b.onclick = () => { location.hash = b.dataset.go === "home" ? "#/" : "#/" + b.dataset.go; });
 $("#btn-new").onclick = () => { location.hash = "#/new"; };
@@ -191,50 +210,43 @@ function route() {
   const h = location.hash || "#/";
   const m = /^#\/inv\/([0-9a-f-]+)(?:\/(\w+))?/.exec(h);
   if (m) { openInv(m[1], m[2] || "graph"); return; }
+  stopWatching();
   if (h === "#/new") { show("new"); return; }
   show("home"); loadHome();
 }
 addEventListener("hashchange", route);
 
 /* ---------- home ---------- */
+let homeTimer = null;
 async function loadHome() {
   const list = await api("/api/investigations");
   const el = $("#home-body");
   if (!list.length) { el.innerHTML = `<div class="empty">No investigations yet. Tap New.</div>`; return; }
   el.innerHTML = list.map((i) => `<div class="card" data-id="${i.id}">
-    <div class="t"><span>${esc(i.seed?.name || i.title)}</span><span class="k">${esc(i.seed?.kind || "")}</span></div>
+    <div class="t"><span>${esc(i.seed?.name || i.title)}${i.live ? ' <span class="pill live">live</span>' : ""}</span><span class="k">${esc(i.seed?.kind || "")}</span></div>
     <div class="g">${esc(i.goal || "")}</div>
     <div class="m"><span><b>${i.entities}</b> entities</span><span><b>${i.stats?.relations ?? 0}</b> links</span>${i.reports ? `<span><b>${i.reports}</b> report${i.reports === 1 ? "" : "s"}</span>` : ""}<span>${esc(String(i.created_at).slice(0, 10))}</span></div>
   </div>`).join("");
   el.querySelectorAll(".card").forEach((c) => c.onclick = () => { location.hash = "#/inv/" + c.dataset.id; });
+  clearTimeout(homeTimer); if (list.some((i) => i.live) && $("#s-home").classList.contains("on")) homeTimer = setTimeout(loadHome, 8000);
 }
 
 /* ---------- new ---------- */
-$("#f-go").onclick = () => {
+$("#f-go").onclick = async () => {
   const seed = $("#f-seed").value.trim(), goal = $("#f-goal").value.trim(), kind = $("#f-kind").value, url = $("#f-url").value.trim(), ceiling = $("#f-ceiling").value;
   if (!seed) { alert("Give a subject."); return; }
-  const log = $("#new-log"); log.textContent = "";
+  const log = $("#new-log"); log.textContent = ""; $("#f-go").disabled = true;
   let created = null;
-  sse("/api/create", { seed, kind, goal: goal || undefined, url: url || undefined }, (line) => { const m = /investigation ([0-9a-f]+) created/.exec(line); if (m) created = m[1]; appendLog(log, line); }, async () => {
+  const job = await post("/api/create", { seed, kind, goal: goal || undefined, url: url || undefined });
+  watchJob(job.id, (line) => { const m = /investigation ([0-9a-f]+) created/.exec(line); if (m) created = m[1]; appendLog(log, line); }, async () => {
+    $("#f-go").disabled = false;
     if (!created) { appendLog(log, "— could not create —"); return; }
     const list = await api("/api/investigations"); const inv = list.find((i) => i.id.startsWith(created));
     if (!inv) return;
+    await post("/api/agent/" + inv.id, { ceiling, model: "sonnet-5" }).catch((e) => appendLog(log, "could not start: " + e.message));
     location.hash = "#/inv/" + inv.id + "/run";
-    setTimeout(() => startAgent(inv.id, ceiling, "sonnet-5"), 400);
   });
 };
-
-/* ---------- SSE ---------- */
-function sse(url, body, onLine, onDone) {
-  live++; $("#inv-live").hidden = false;
-  fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) }).then(async (r) => {
-    const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
-    for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); const parts = buf.split("\n\n"); buf = parts.pop();
-      for (const p of parts) { const ev = /event: (\w+)/.exec(p), dm = /data: (.*)/s.exec(p); if (!dm) continue; const data = JSON.parse(dm[1]);
-        if (ev && ev[1] === "done") { live--; if (live <= 0) { live = 0; $("#inv-live").hidden = true; } onDone?.(); } else onLine(data); } }
-  }).catch((e) => { live = Math.max(0, live - 1); onLine("error: " + e.message); onDone?.(); });
-}
-function appendLog(el, t) { const line = document.createElement("div"); if (/^\s*·/.test(t)) line.className = "agent"; else if (/^\s*▸/.test(t)) line.className = "tool"; line.textContent = t; el.appendChild(line); el.scrollIntoView?.({ block: "end" }); const body = el.closest(".body"); if (body) body.scrollTop = body.scrollHeight; }
 
 /* ---------- investigation ---------- */
 let G = null, nodes = [], links = [], nmap = new Map(), byEnt = new Map(), edgesBy = new Map(), attrsBy = new Map();
@@ -243,26 +255,32 @@ async function openInv(id, tab) {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("on", p.id === "p-" + tab));
   if (INV !== id) {
-    INV = id; closeSheet(); $("#ask-body").innerHTML = `<div class="empty">Ask the graph anything about this investigation. A one-shot analyst reads the graph and answers with cited evidence.</div>`; $("#run-log").textContent = "";
+    INV = id; stopWatching(); closeSheet(); $("#ask-body").innerHTML = ""; $("#run-log").textContent = ""; $("#run-status").textContent = "";
     const list = await api("/api/investigations"); META = list.find((i) => i.id === id) || null;
     $("#inv-title").textContent = META?.seed?.name || "";
     await loadGraph();
+    loadAskHistory();
   }
+  refreshLive();
   if (tab === "report") loadReport();
+  if (tab === "run") loadRun();
+  if (tab === "ask") loadAskHistory();
   if (tab === "graph") { resize(); setTimeout(fit, 200); }
 }
 document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => { location.hash = "#/inv/" + INV + "/" + b.dataset.tab; });
+async function refreshLive() { if (!INV) return; const js = await api("/api/jobs?inv=" + INV); const live = js.some((j) => j.status === "running"); $("#inv-live").hidden = !live; if (live && $("#s-inv").classList.contains("on")) setTimeout(refreshLive, 6000); }
 async function loadGraph() {
   G = await api("/api/graph/" + INV);
   byEnt = new Map(G.entities.map((e) => [e.id, e]));
-  nodes = G.entities.map((e) => ({ ...e, x: W()/2 + (Math.random()-.5)*500, y: H()/2 + (Math.random()-.5)*500, vx: 0, vy: 0, r: 5 + Math.min(20, Math.sqrt(+e.claims || 1) * 3) }));
+  const old = new Map(nodes.map((n) => [n.id, n]));
+  nodes = G.entities.map((e) => { const o = old.get(e.id); return { ...e, x: o?.x ?? W()/2 + (Math.random()-.5)*500, y: o?.y ?? H()/2 + (Math.random()-.5)*500, vx: 0, vy: 0, r: 5 + Math.min(20, Math.sqrt(+e.claims || 1) * 3) }; });
   nmap = new Map(nodes.map((n) => [n.id, n]));
   links = G.links.map((l) => ({ ...l, a: nmap.get(l.s), b: nmap.get(l.o) })).filter((l) => l.a && l.b);
   edgesBy = new Map(); for (const l of links) for (const k of [l.s, l.o]) (edgesBy.get(k) || edgesBy.set(k, []).get(k)).push(l);
   attrsBy = new Map(); for (const a of G.attrs) (attrsBy.get(a.e) || attrsBy.set(a.e, []).get(a.e)).push(a);
   $("#inv-sub").textContent = `${nodes.length} entities · ${links.length} links · ${G.sources} sources`;
   $("#legend").innerHTML = TYPES.filter((t) => nodes.some((n) => n.type === t)).map((t) => `<div class="r"><span class="dot" style="background:${cssv("--" + t)}"></span>${t.replace("_", " ")}</div>`).join("") + GRADES.slice(0, 3).map((g) => `<div class="r"><span class="ln" style="border-color:${cssv("--" + g)}"></span>${GLABEL[g]}</div>`).join("");
-  hot = 300; setTimeout(fit, 900);
+  hot = 300; if (!old.size) setTimeout(fit, 900);
 }
 
 /* ---------- canvas ---------- */
@@ -306,6 +324,7 @@ canvas.addEventListener("wheel", (e) => { e.preventDefault(); const f = Math.exp
 function fit() { if (!nodes.length) return; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for (const n of nodes) { x0=Math.min(x0,n.x); y0=Math.min(y0,n.y); x1=Math.max(x1,n.x); y1=Math.max(y1,n.y); } const pad = 50; scale = Math.max(.15, Math.min(2, Math.min((W()-pad*2)/((x1-x0)||1), (H()-pad*2-60)/((y1-y0)||1)))); ox = W()/2 - (x0+x1)/2*scale; oy = H()/2 + 20 - (y0+y1)/2*scale; }
 function focusNode(id) { const n = nmap.get(id); if (!n) return; scale = Math.max(scale, 1); ox = W()/2 - n.x*scale; oy = H()/3 - n.y*scale; }
 $("#btn-fit").onclick = fit;
+$("#btn-refresh").onclick = () => loadGraph();
 $("#find").addEventListener("keydown", (e) => { if (e.key !== "Enter") return; const q = e.target.value.trim().toLowerCase(); if (!q) return; const n = nodes.find((x) => x.name.toLowerCase() === q) || nodes.find((x) => x.name.toLowerCase().includes(q)); if (n) { openNode(n.id); focusNode(n.id); e.target.blur(); } });
 
 /* ---------- dossier sheet ---------- */
@@ -344,22 +363,35 @@ $("#sbody").addEventListener("click", async (e) => {
 });
 
 /* ---------- ask ---------- */
-$("#ask-go").onclick = () => {
-  const q = $("#ask-q").value.trim(); if (!q || !INV) return; $("#ask-q").value = "";
-  const body = $("#ask-body"); if (body.querySelector(".empty")) body.innerHTML = "";
-  body.insertAdjacentHTML("beforeend", `<div class="bubble me"><div class="who">you</div><div class="md">${esc(q)}</div></div>`);
-  const b = document.createElement("div"); b.className = "bubble"; b.innerHTML = `<div class="who">the graph <span class="spin"></span></div><div class="log"></div><div class="md" hidden></div>`; body.appendChild(b);
-  const log = b.querySelector(".log"), out = b.querySelector(".md"); let answering = false, answer = "";
+async function loadAskHistory() {
+  const body = $("#ask-body");
+  const notes = await api("/api/notes/" + INV);
+  const answers = notes.filter((n) => n.kind === "note" && /^answer:/.test(n.title || "")).reverse();
+  const jobsList = (await api("/api/jobs?inv=" + INV)).filter((j) => j.kind === "ask" && j.status === "running");
+  body.innerHTML = answers.length ? answers.map((a) => `<div class="bubble me"><div class="who">you</div><div class="md">${esc(a.title.replace(/^answer:\s*/, ""))}</div></div><div class="bubble"><div class="who">the graph · ${esc(String(a.created_at).slice(11, 16))}</div><div class="md">${md(a.body)}</div></div>`).join("") : `<div class="empty">Ask the graph anything about this investigation. A one-shot analyst reads the graph and answers with cited evidence.</div>`;
+  for (const j of jobsList) attachAsk(j, j.label);
   body.scrollTop = body.scrollHeight;
-  sse("/api/ask/" + INV, { q }, (line) => { if (/^══ answer/.test(line)) { answering = true; return; } if (answering) answer += line + "\n"; else if (/^\s*[▸·]/.test(line)) appendLog(log, line); body.scrollTop = body.scrollHeight; },
-    () => { b.querySelector(".who").textContent = "the graph"; log.hidden = true; out.hidden = false; out.innerHTML = md(answer.trim() || "(no answer)"); body.scrollTop = body.scrollHeight; });
+}
+function attachAsk(job, q) {
+  const body = $("#ask-body"); if (body.querySelector(".empty")) body.innerHTML = "";
+  if (!body.querySelector(`[data-job="${job.id}"]`)) body.insertAdjacentHTML("beforeend", `<div class="bubble me"><div class="who">you</div><div class="md">${esc(q)}</div></div><div class="bubble" data-job="${job.id}"><div class="who">the graph <span class="spin"></span></div><div class="log"></div><div class="md" hidden></div></div>`);
+  const b = body.querySelector(`[data-job="${job.id}"]`), log = b.querySelector(".log"), out = b.querySelector(".md");
+  let answering = false, answer = "";
+  watchJob(job.id, (line) => { if (/^══ answer/.test(line)) { answering = true; return; } if (answering) answer += line + "\n"; else if (/^\s*[▸·]/.test(line)) appendLog(log, line); body.scrollTop = body.scrollHeight; },
+    () => { b.querySelector(".who").textContent = "the graph"; log.hidden = true; out.hidden = false; out.innerHTML = md(answer.trim() || "(no answer — see the run log)"); body.scrollTop = body.scrollHeight; });
+  body.scrollTop = body.scrollHeight;
+}
+$("#ask-go").onclick = async () => {
+  const q = $("#ask-q").value.trim(); if (!q || !INV) return; $("#ask-q").value = "";
+  const job = await post("/api/ask/" + INV, { q });
+  attachAsk(job, q);
 };
 $("#ask-q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#ask-go").click(); } });
 
 /* ---------- report ---------- */
 async function loadReport() {
   const notes = await api("/api/notes/" + INV);
-  const reports = notes.filter((n) => n.kind === "report"), others = notes.filter((n) => n.kind !== "report").slice(0, 12);
+  const reports = notes.filter((n) => n.kind === "report"), others = notes.filter((n) => n.kind !== "report" && !/^answer:/.test(n.title || "")).slice(0, 12);
   const el = $("#report-body");
   if (!reports.length && !others.length) { el.innerHTML = `<div class="empty">No report yet. Run the investigator.</div>`; return; }
   el.innerHTML = reports.map((r) => `<div class="bubble" style="margin-bottom:12px"><div class="who">report · ${esc(r.title || "")} · ${esc(String(r.created_at).slice(0, 16).replace("T", " "))}</div><div class="md">${md(r.body)}</div></div>`).join("") +
@@ -367,11 +399,18 @@ async function loadReport() {
 }
 
 /* ---------- run ---------- */
-function startAgent(id, ceiling, model) {
-  const log = $("#run-log"); log.textContent = ""; $("#run-go").disabled = true;
-  sse("/api/agent/" + id, { ceiling, model }, (line) => appendLog(log, line), async () => { $("#run-go").disabled = false; await loadGraph(); loadReport(); });
+let runJob = null;
+async function loadRun() {
+  const js = (await api("/api/jobs?inv=" + INV)).filter((j) => j.kind === "agent");
+  const j = js[0] || null;
+  const st = $("#run-status"), log = $("#run-log");
+  if (!j) { st.innerHTML = `<span class="pill">no run yet</span>`; $("#run-go").disabled = false; $("#run-stop").hidden = true; return; }
+  st.innerHTML = `<span class="pill ${j.status === "running" ? "live" : ""}">${j.status}</span> <span>started ${ago(j.startedAt)} ago${j.endedAt ? ", ran " + Math.round((j.endedAt - j.startedAt) / 60000) + " min" : ""}</span>`;
+  $("#run-go").disabled = j.status === "running"; $("#run-stop").hidden = j.status !== "running";
+  if (runJob !== j.id) { runJob = j.id; log.textContent = ""; watchJob(j.id, (line) => appendLog(log, line), async () => { runJob = null; await loadGraph(); loadRun(); loadReport(); }); }
 }
-$("#run-go").onclick = () => { if (INV) startAgent(INV, $("#run-ceiling").value, $("#run-model").value); };
+$("#run-go").onclick = async () => { if (!INV) return; try { await post("/api/agent/" + INV, { ceiling: $("#run-ceiling").value, model: $("#run-model").value }); runJob = null; loadRun(); refreshLive(); } catch (e) { alert(e.message); } };
+$("#run-stop").onclick = async () => { if (!runJob) return; if (!confirm("Stop the investigator? Its work so far stays in the graph.")) return; await post(`/api/job/${runJob}/stop`); loadRun(); };
 
 route();
 </script>
