@@ -32,6 +32,7 @@ export async function serpApiSearch(query: string, opts: SearchOpts & { engine?:
   const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`serpapi ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const j = (await res.json()) as { organic_results?: { link?: string; title?: string; snippet?: string; date?: string }[]; error?: string; serpapi_pagination?: { next?: string } };
+  if (j.error && /hasn't returned any results|no results/i.test(j.error)) return { engine: `search.serpapi.${eng.engine}`, query, page, hits: [], usd: 0.01, more: false };
   if (j.error) throw new Error(`serpapi ${eng.engine}: ${j.error}`);
   const base = (page - 1) * num;
   const hits: SearchHit[] = (j.organic_results ?? [])

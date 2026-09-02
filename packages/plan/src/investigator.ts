@@ -238,8 +238,12 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
       case "graph_sql": {
         const sql = S("sql").replace(/;\s*$/, "");
         if (!/^\s*(select|with)\b/i.test(sql) || /\b(insert|update|delete|drop|alter|create|truncate|grant)\b/i.test(sql)) return "SELECT only";
+        // scope: every investigation-bearing table is shadowed by a CTE filtered to THIS investigation, so the agent
+        // can write plain `FROM entities` and never sees another case's rows
+        const scoped = ["entities", "links", "attributes", "relation_claims", "attribute_claims", "sources", "notes", "hypotheses", "decisions", "missions", "actions", "resolution_decisions", "slots", "extractions"];
+        const ctes = scoped.map((t) => `${t} AS (SELECT * FROM ${t} WHERE investigation_id = '${inv.id}')`).join(", ");
         try {
-          const rows = await query<Record<string, unknown>>(`SELECT * FROM (${sql}) q LIMIT 200`, []);
+          const rows = await query<Record<string, unknown>>(`WITH ${ctes} SELECT * FROM (${sql}) q LIMIT 200`, []);
           return rows.length ? JSON.stringify(rows.slice(0, 200)).slice(0, 10_000) : "no rows";
         } catch (e) { return "sql error: " + String((e as Error).message).slice(0, 300); }
       }
