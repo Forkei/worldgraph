@@ -39,7 +39,7 @@ describe("dispatcher gaps", () => {
 
   it("expands to neighbours reached through indicator predicates, with indicators derived from the ontology", () => {
     const gaps = computeGaps(g, "subj", IND, 2, { maxRing: 2 });
-    // the spouse hangs off a family edge that no indicator names → never targeted
+    // the spouse hangs off a family edge that no indicator names → never targeted (family is not a lead by itself)
     expect(on(gaps, "spouse")).toEqual([]);
     // ring 1 orgs: "employment" applies inbound (works_at range = organization); "collaborators" (knows) does not apply to orgs
     expect(on(gaps, "kp")).toEqual(["board:missing"]);                 // employment satisfied (2 origins), board missing
@@ -93,5 +93,16 @@ describe("dispatcher gaps", () => {
     expect(kp.objective).toBe("Find board for kp (ring 1: works at of Subject)");
     expect(kp.frontier[0]).toContain("board of directors");
     for (const m of missions) { expect(m.frontier[0]).toBeTruthy(); expect(m.dedupe_key).toContain("|"); }
+  });
+});
+
+describe("dispatcher reach — the owner earns a deep dive", () => {
+  it("reaches people bound structurally to the subject even when no indicator names that predicate", () => {
+    const INDO = [{ name: "ownership_and_operators", predicates: ["owns", "controls", "manages"], record_classes: [], weight: 1 }, { name: "litigation", predicates: ["party_to"], record_classes: [], weight: 0.6 }];
+    const g = makeGraph([E("srv", "organization", "Example Realm"), E("brad", "person", "Alex Sample"), E("tebex", "organization", "Tebex")],
+      [L("brad", "member_of", "srv", 2, "corroborated"), L("srv", "transacted_with", "tebex", 1)]);
+    const gaps = computeGaps(g, "srv", INDO, 2, { maxRing: 1 });
+    expect(gaps.some((x) => x.entity === "brad" && x.indicator === "ownership_and_operators")).toBe(true);
+    expect(gaps.some((x) => x.entity === "tebex")).toBe(false);   // transactional, not named by an indicator
   });
 });

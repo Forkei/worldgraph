@@ -64,6 +64,7 @@ button.on{background:var(--accent);border-color:var(--accent);color:var(--accent
 .row .m{font-size:11px;color:var(--muted);margin-top:4px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
 .g{font-size:9.5px;font-weight:600;padding:1px 6px;border-radius:5px;color:#fff;letter-spacing:.02em}
 .q{font-size:10.5px;color:var(--muted);background:var(--panel2);padding:1px 6px;border-radius:5px}
+.sc{font-size:10px;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);padding:0 5px;border-radius:5px;font-family:"IBM Plex Mono",ui-monospace,monospace}
 .why{font-size:10.5px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0}
 .ev{margin-top:6px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;font-size:12px}
 .ev .c{padding:6px 0;border-top:1px solid var(--line)}
@@ -96,6 +97,7 @@ button.on{background:var(--accent);border-color:var(--accent);color:var(--accent
     <div id="tools">
       <input id="find" placeholder="Find an entity…" autocomplete="off">
       <button id="btn-findings">Findings</button>
+      <button id="btn-sources">Sources</button>
       <button id="btn-fit">Fit</button>
     </div>
   </div>
@@ -173,6 +175,7 @@ const qstr = (q) => { if (!q) return ""; const k = Object.entries(q); return k.l
 const dates = (l) => l.vf && l.vt ? `${l.vf.slice(0,7)} → ${l.vt.slice(0,7)}` : l.vf ? `${l.vf.slice(0,7)} →` : l.vt ? `→ ${l.vt.slice(0,7)}` : l.dl ? "@" + l.dl : "";
 const evHtml = (kind, id) => { const ev = (D.evidence[kind + ":" + id] || []); if (!ev.length) return `<div class="ev">no recorded provenance</div>`;
   return `<div class="ev">` + ev.map((c) => `<div class="c"><div class="src"><span>${esc(c.domain || "")}</span>${c.pk ? `<span>[${esc(c.pk)}]</span>` : ""}${c.at ? `<span>${esc(c.at)}</span>` : ""}</div><blockquote>${esc((c.quote || "").slice(0, 260))}</blockquote>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.url.slice(0, 70))}</a>` : ""}</div>`).join("") + `</div>`; };
+const srcChips = (kind, id) => { const ev = D.evidence[kind + ":" + id] || []; const doms = [...new Set(ev.map((c) => c.domain || (c.url || "").replace(/^capability:\/\//, "").split("/")[0]).filter(Boolean))]; return doms.slice(0, 3).map((d) => `<span class="sc">${esc(d)}</span>`).join("") + (doms.length > 3 ? `<span class="sc">+${doms.length - 3}</span>` : ""); };
 function openNode(id){
   selected = id; const n = byEnt.get(id); if (!n) return;
   const out = (edgesBy.get(id) || []).filter((l) => l.s === id).sort((a,b) => GRADES.indexOf(a.grade) - GRADES.indexOf(b.grade));
@@ -182,9 +185,9 @@ function openNode(id){
   const keys = n.keys && Object.keys(n.keys).length ? Object.entries(n.keys).map(([k,v]) => `${k}=${[].concat(v).join(",")}`).join("  ") : "";
   if (keys) h += `<div class="keys mono">${esc(keys)}</div>`;
   const pred = (l) => `${esc(l.p)}${l.ps ? ` <span class="q">${esc(l.ps.replace(/^candidate:/, ""))}</span>` : ""}`;
-  if (at.length) { h += `<div class="grp">attributes (${at.length})</div>`; for (const a of at) h += `<div class="row"><div class="h"><span>${esc(a.key)}${a.ks ? ` <span class="q">${esc(a.ks.replace(/^candidate:/, ""))}</span>` : ""} = <b class="mono">${esc(a.value)}</b></span></div><div class="m">${gchip(a.grade)}<span>${a.rel}${a.cred} · ${a.origins} origin${a.origins == 1 ? "" : "s"}</span>${a.contested ? '<span class="q" style="color:var(--disputed)">contested</span>' : ''} <button class="why" data-k="attribute" data-id="${a.id}">evidence</button></div></div>`; }
-  if (out.length) { h += `<div class="grp">links out (${out.length})</div>`; for (const l of out) { const o = byEnt.get(l.o); h += `<div class="row"><div class="h"><span class="p">${pred(l)}</span><span class="o" data-go="${l.o}">${esc(o?.name || "?")}</span></div><div class="m">${gchip(l.grade)}<span>${l.rel}${l.cred} · ${l.origins}o/${l.ec}c</span>${dates(l) ? `<span class="q">${dates(l)}</span>` : ""}${qstr(l.q) ? `<span class="q">${esc(qstr(l.q))}</span>` : ""} <button class="why" data-k="link" data-id="${l.id}">evidence</button></div></div>`; } }
-  if (inc.length) { h += `<div class="grp">links in (${inc.length})</div>`; for (const l of inc) { const sN = byEnt.get(l.s); h += `<div class="row"><div class="h"><span class="o" data-go="${l.s}" style="text-align:left">${esc(sN?.name || "?")}</span><span class="p">${pred(l)}</span></div><div class="m">${gchip(l.grade)}${dates(l) ? `<span class="q">${dates(l)}</span>` : ""} <button class="why" data-k="link" data-id="${l.id}">evidence</button></div></div>`; } }
+  if (at.length) { h += `<div class="grp">attributes (${at.length})</div>`; for (const a of at) h += `<div class="row"><div class="h"><span>${esc(a.key)}${a.ks ? ` <span class="q">${esc(a.ks.replace(/^candidate:/, ""))}</span>` : ""} = <b class="mono">${esc(a.value)}</b></span></div><div class="m">${gchip(a.grade)}<span>${a.rel}${a.cred} · ${a.origins} origin${a.origins == 1 ? "" : "s"}</span>${a.contested ? '<span class="q" style="color:var(--disputed)">contested</span>' : ''} ${srcChips("attribute", a.id)} <button class="why" data-k="attribute" data-id="${a.id}">evidence</button></div></div>`; }
+  if (out.length) { h += `<div class="grp">links out (${out.length})</div>`; for (const l of out) { const o = byEnt.get(l.o); h += `<div class="row"><div class="h"><span class="p">${pred(l)}</span><span class="o" data-go="${l.o}">${esc(o?.name || "?")}</span></div><div class="m">${gchip(l.grade)}<span>${l.rel}${l.cred} · ${l.origins}o/${l.ec}c</span>${dates(l) ? `<span class="q">${dates(l)}</span>` : ""}${qstr(l.q) ? `<span class="q">${esc(qstr(l.q))}</span>` : ""} ${srcChips("link", l.id)} <button class="why" data-k="link" data-id="${l.id}">evidence</button></div></div>`; } }
+  if (inc.length) { h += `<div class="grp">links in (${inc.length})</div>`; for (const l of inc) { const sN = byEnt.get(l.s); h += `<div class="row"><div class="h"><span class="o" data-go="${l.s}" style="text-align:left">${esc(sN?.name || "?")}</span><span class="p">${pred(l)}</span></div><div class="m">${gchip(l.grade)}${dates(l) ? `<span class="q">${dates(l)}</span>` : ""}${srcChips("link", l.id)} <button class="why" data-k="link" data-id="${l.id}">evidence</button></div></div>`; } }
   $("#dbody").innerHTML = h; $("#drawer").classList.add("open"); $("#drawer").scrollTop = 0;
 }
 function closeDrawer(){ $("#drawer").classList.remove("open"); }
@@ -213,6 +216,18 @@ function showFindings(){
   f.querySelectorAll("[data-go]").forEach((el) => el.onclick = () => { f.hidden = true; openNode(el.dataset.go); focusNode(el.dataset.go); });
 }
 $("#btn-findings").onclick = showFindings;
+function showSources(){
+  const f = $("#findings");
+  const count = new Map();
+  for (const ev of Object.values(D.evidence)) for (const c of ev) { const k = c.domain || (c.url || "").replace(/^capability:\/\//, "").split("/")[0] || "?"; const cur = count.get(k) || { n: 0, pk: c.pk, url: c.url }; cur.n++; count.set(k, cur); }
+  const rows = [...count.entries()].sort((a, b) => b[1].n - a[1].n);
+  f.innerHTML = `<h2>Sources</h2><div class="sub">${rows.length} sources behind ${D.entities.length} entities — a fact's grade comes from who published it (authority / self / independent / platform) and how many independent origins agree.</div>` +
+    rows.map(([d, v]) => `<div class="fe"><span class="t">${esc(v.pk || "")}</span><span class="n mono">${v.url && !v.url.startsWith("capability:") ? `<a href="${esc(v.url)}" target="_blank" rel="noopener" style="color:inherit">${esc(d)}</a>` : esc(d)}</span><span class="c">${v.n} fact${v.n === 1 ? "" : "s"}</span></div>`).join("") +
+    `<div style="margin-top:14px;text-align:right"><button id="fclose">Close</button></div>`;
+  f.hidden = false;
+  f.querySelector("#fclose").onclick = () => { f.hidden = true; };
+}
+$("#btn-sources").onclick = showSources;
 $("#find").addEventListener("keydown", (e) => { if (e.key !== "Enter") return; const q = e.target.value.trim().toLowerCase(); if (!q) return; const n = nodes.find((x) => x.name.toLowerCase() === q) || nodes.find((x) => x.name.toLowerCase().includes(q)); if (n) { openNode(n.id); focusNode(n.id); } });
 
 $("#legend").innerHTML = "<b>entity</b>" + TYPES.filter((t) => nodes.some((n) => n.type === t)).map((t) => `<div class="r"><span class="dot" style="background:${cssv("--" + t)}"></span>${t.replace("_"," ")}</div>`).join("") + "<b>evidence</b>" + GRADES.map((g) => `<div class="r"><span class="ln" style="border-color:${cssv("--" + g)}"></span>${GLABEL[g]}</div>`).join("");

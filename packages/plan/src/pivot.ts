@@ -30,7 +30,7 @@ export interface PivotRun { capability: string; kind: PivotKind; value: string; 
 export interface PivotSummary { runs: PivotRun[]; claims: number; sources: number; discovered: PivotSeed[]; stopped?: string }
 
 export const DEFAULT_DEPTH: Record<PivotKind, number> = { domain: 3, hostname: 2, ip: 2, asn: 1, email: 2, username: 1, phone: 1, name: 1, org: 1, url: 1, image: 1, coordinates: 1 };
-const norm = (kind: PivotKind, v: string) => (kind === "name" || kind === "org" ? v.trim().replace(/\s+/g, " ") : v.trim().toLowerCase());
+const norm = (kind: PivotKind, v: string) => (kind === "name" || kind === "org" ? v.trim().replace(/\s+/g, " ") : kind === "username" ? v.trim().toLowerCase().replace(/^@/, "") : v.trim().toLowerCase());
 export const cacheKeyFor = (cap: string, kind: PivotKind, value: string) => `${cap}|${kind}|${norm(kind, value).toLowerCase()}`;
 
 /** Write one CapabilityResult into an investigation as a source + claims. Returns the source and how many claims landed. */
@@ -181,11 +181,15 @@ export function harvestPivots(g: Graph, subjectId?: string | null): PivotSeed[] 
     if (s) {
       push(s.type === "organization" ? "org" : "name", s.name, "graph:subject");
       for (const k of ["email", "domain", "handle"] as const) for (const v of s.keys[k] ?? []) push(k === "handle" ? "username" : k, v, "graph:subject");
-      const PRO = new Set(["works_at", "founded", "board_member", "member_of", "owns", "manages", "subsidiary_of", "controls"]);
+      // the people and organizations bound to the subject structurally (owner, founder, members, subsidiaries) get the
+      // full arsenal too: their names AND their handles/emails — this is the "deep dive on the owner"
+      const PRO = new Set(["works_at", "founded", "board_member", "member_of", "owns", "manages", "subsidiary_of", "controls", "part_of", "related_to", "spouse_of", "parent_of", "knows"]);
       for (const l of [...(g.out.get(subjectId) ?? []), ...(g.inn.get(subjectId) ?? [])]) {
         if (!PRO.has(l.predicate)) continue;
         const other = g.entities.get(l.src === subjectId ? l.dst : l.src);
-        if (other?.type === "organization") push("org", other.name, `graph:${l.predicate}`);
+        if (!other || (other.type !== "organization" && other.type !== "person")) continue;
+        push(other.type === "organization" ? "org" : "name", other.name, `graph:${l.predicate}`);
+        for (const k of ["email", "domain", "handle"] as const) for (const v of other.keys[k] ?? []) push(k === "handle" ? "username" : k, v, `graph:${l.predicate}`);
       }
     }
   }

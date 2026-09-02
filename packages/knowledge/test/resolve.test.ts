@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolve, scorePair, tokenIdf, jaroWinkler, initialism, type Provisional } from "../src/resolve.ts";
+import { resolve, scorePair, tokenIdf, jaroWinkler, initialism, registrableDomain, orgIdentityKey, type Provisional } from "../src/resolve.ts";
 
 const P = (id: string, type: string, name: string, o: Partial<Provisional> = {}): Provisional => ({
   id, type, kind: null, name, name_norm: name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(), keys: {}, neighbors: new Set(), claim_count: 1, ...o,
@@ -132,5 +132,39 @@ describe("hint-key validation", () => {
     expect(ok.licence).toEqual(["1000002"]);
     const junk = identityKeysFromHints({ handle: "General Partner", licence: "Board Member", email: "not an email", url: "San Francisco" });
     expect(Object.keys(junk)).toHaveLength(0);
+  });
+});
+
+describe("resolve — same-name organizations (the examplerealm lesson)", () => {
+  it("keeps two same-name orgs on different domains apart, and leaves keyless mentions to the judge", () => {
+    const ents = [
+      P("mc", "organization", "Example Realm", { keys: { domain: ["examplerealm.online"], url: ["examplerealm.online"] } }),
+      P("coach", "organization", "Example Realm", { keys: { domain: ["examplerealm.com"] } }),
+      P("plain", "organization", "Example Realm"),
+      ...filler,
+    ];
+    const r = resolve(ents, []);
+    expect(r.clusters.get("mc")).not.toBe(r.clusters.get("coach"));
+    expect(r.clusters.get("plain")).not.toBe(r.clusters.get("mc"));
+    expect(r.clusters.get("plain")).not.toBe(r.clusters.get("coach"));
+    const hyp = (a: string, b: string) => r.hypotheses.some((h) => [h.a, h.b].includes(a) && [h.a, h.b].includes(b));
+    expect(hyp("plain", "mc")).toBe(true);
+    expect(hyp("plain", "coach")).toBe(true);
+    expect(hyp("mc", "coach")).toBe(false);
+  });
+  it("attaches keyless mentions to the keyed record when the name is unambiguous", () => {
+    const ents = [P("k", "organization", "Cloudflare", { keys: { domain: ["cloudflare.com"] } }), P("p", "organization", "Cloudflare"), ...filler];
+    const r = resolve(ents, []);
+    expect(r.clusters.get("p")).toBe(r.clusters.get("k"));
+    expect(r.merges.some((m) => m.features.name_unambiguous)).toBe(true);
+  });
+  it("subdomains do not conflict: investors.palantir.com and palantir.com are the same registrable domain", () => {
+    const ents = [P("a", "organization", "Palantir Technologies", { keys: { url: ["investors.palantir.com"] } }), P("b", "organization", "Palantir Technologies", { keys: { domain: ["palantir.com"] } }), ...filler];
+    const r = resolve(ents, []);
+    expect(r.clusters.get("a")).toBe(r.clusters.get("b"));
+    expect(registrableDomain("https://investors.palantir.com/x")).toBe("palantir.com");
+    expect(registrableDomain("company-information.service.gov.uk")).toBe("service.gov.uk");
+    expect(orgIdentityKey({ url: ["www.examplerealm.com"] })).toBe("domain:examplerealm.com");
+    expect(orgIdentityKey({})).toBe("");
   });
 });

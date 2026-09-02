@@ -8,7 +8,7 @@ import { grade, betterTier, type EvidenceProfile } from "./grade.ts";
 import { intervalHoles } from "./gaps.ts";
 import { loadRuleFiles, slotsFor, type Rule, type EntityView } from "./rules.ts";
 import { tierForClaim, type SourceFacts } from "./reliability.ts";
-import { resolve as resolveEntities, type Provisional, type Decision } from "./resolve.ts";
+import { resolve as resolveEntities, orgIdentityKey, type Provisional, type Decision } from "./resolve.ts";
 
 interface ClaimRow {
   id: string; kind: "relation" | "attribute"; source_id: string; tier: string | null; attributed_to: string | null; span_method: string | null;
@@ -84,11 +84,16 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   interface Ent { id: string; type: string; kind: string | null; names: Map<string, number>; aliases: Set<string>; keys: Record<string, Set<string>>; claims: Set<string>; first: string | null; last: string | null }
   const ents = new Map<string, Ent>();
   // persons are provisional PER SOURCE (a same name across sources is a scored merge or a hypothesis, never assumed);
-  // organizations / places / others group by normalized name across sources.
+  // organizations are provisional PER IDENTITY KEY: "Example Realm"{examplerealm.com} and "Example Realm"
+  // {examplerealm.online} are two records until an identifier or a judgment says otherwise; keyless mentions of the
+  // name form one record that the resolver attaches to the keyed one only when the name is unambiguous.
+  // places / others group by normalized name across sources.
   const entityOf = (m: Mention, claimId: string, asserted: string | null, sourceId: string): string => {
     const type = m.type || "artifact";
     const norm = nameNorm(m.name || m.surface, type) || nameNorm(m.surface, type) || "unnamed";
-    const id = type === "person" ? stableId(investigationId, type, norm, sourceId) : stableId(investigationId, type, norm);
+    const id = type === "person" ? stableId(investigationId, type, norm, sourceId)
+      : type === "organization" ? stableId(investigationId, type, norm, orgIdentityKey(identityKeysFromHints(m.hints ?? {})))
+      : stableId(investigationId, type, norm);
     let e = ents.get(id);
     if (!e) { e = { id, type, kind: null, names: new Map(), aliases: new Set(), keys: {}, claims: new Set(), first: null, last: null }; ents.set(id, e); }
     const nm = (m.name || m.surface).trim();

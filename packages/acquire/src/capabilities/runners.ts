@@ -34,7 +34,7 @@ export const CAP_RUNNERS: CapRunner[] = [
   { id: "people.gravatar", consumes: ["email"], run: (a) => gravatar(a[0]!), auto: true },
   { id: "people.fec", consumes: ["name"], run: one(fecDonations), auto: true },
   { id: "people.academic", consumes: ["name"], run: one(academic), auto: true },
-  { id: "people.username", consumes: ["username"], run: (a) => usernameAccounts(a[0]!), auto: true, maxPerRun: 3 },
+  { id: "people.username", consumes: ["username"], run: (a) => usernameAccounts(a[0]!.replace(/^@/, "")), auto: true, maxPerRun: 3 },
   { id: "people.breach", consumes: ["email"], run: (a) => (a[0] ? hibpAccount(a[0]) : hibpCatalog()), auto: true },
   { id: "people.email_pattern", consumes: ["domain"], run: (a) => hunter(a[0]!), auto: true, maxPerRun: 3 },
   { id: "people.relatives", consumes: ["name"], run: one(relatives), auto: true },

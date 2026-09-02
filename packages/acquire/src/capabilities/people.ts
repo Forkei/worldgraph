@@ -116,8 +116,10 @@ export interface WmnSite { name: string; uri_check: string; e_code?: number; e_s
 
 /** Apply WhatsMyName detection rules: an account EXISTS when status==e_code and e_string is in the body; it is
  *  MISSING when status==m_code and m_string is in the body; otherwise the result is unknown. Pure + tested. */
-export function checkSite(site: WmnSite, status: number, body: string): "exists" | "missing" | "unknown" {
-  const existMatch = site.e_code === status && (site.e_string == null || body.includes(site.e_string));
+export function checkSite(site: WmnSite, status: number, body: string, username?: string): "exists" | "missing" | "unknown" {
+  // a profile page that never mentions the username is a catch-all page, not a profile (the Fanslist/OnlyFans false positive)
+  const echoes = !username || !body || body.toLowerCase().includes(username.toLowerCase());
+  const existMatch = site.e_code === status && (site.e_string == null || body.includes(site.e_string)) && echoes;
   const missMatch = site.m_code === status && (site.m_string == null || body.includes(site.m_string));
   if (existMatch && !missMatch) return "exists";
   if (missMatch) return "missing";
@@ -157,7 +159,7 @@ export async function usernameAccounts(username: string, opts: { concurrency?: n
     const target = site.uri_check.replace(/\{account\}/g, encodeURIComponent(username));
     try {
       const body = await getText(target, { rateKey: new URL(target).host, minIntervalMs: 0, timeoutMs: 12_000 });
-      return { site, url: target, verdict: checkSite(site, 200, body) };
+      return { site, url: target, verdict: checkSite(site, 200, body, username) };
     } catch (e) {
       // a 404 (thrown by http helper) is the common "missing" signal; anything else is unknown
       const status = Number(String((e as Error).message).match(/\s(\d{3}):/)?.[1] ?? 0);

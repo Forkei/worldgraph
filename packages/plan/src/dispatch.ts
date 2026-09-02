@@ -73,7 +73,11 @@ export function computeGaps(g: Graph, subjectId: string, indicators: Indicator[]
     for (const from of frontier) {
       const fromQ = reached.get(from)!.via.quality;
       for (const l of [...(g.out.get(from) ?? []), ...(g.inn.get(from) ?? [])]) {
-        if (!indPreds.has(l.predicate)) continue;
+        // who is reached: anyone bound structurally (the owner, a founder, a member, a subsidiary) — the Question's
+        // indicators then decide what to look for on them; transactional edges only reach when an indicator names them
+        // (family edges are structural but do not spawn missions on their own — a spouse is not a lead unless the
+        // Question asks about family; the maintainer's steer, 2026-09-01)
+        if (!indPreds.has(l.predicate) && !(isStructural(l.predicate, reg) && !reg.isA(l.predicate, "related_to"))) continue;
         const otherId = l.src === from ? l.dst : l.src;
         const other = g.entities.get(otherId);
         if (!other || !expandTypes.has(other.type)) continue;

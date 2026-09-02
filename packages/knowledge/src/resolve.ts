@@ -47,6 +47,19 @@ export function tokenIdf(ents: Provisional[]): Map<string, number> {
   return new Map([...df].map(([t, d]) => [t, Math.log((n + 1) / (d + 0.5))]));
 }
 
+/** "investors.palantir.com" → "palantir.com": the registrable part is what identifies an organization. */
+export const registrableDomain = (v: string): string => { const h = v.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/[/:?#].*$/, ""); const p = h.split("."); return p.length > 2 && !/^(co|com|org|net|gov|ac|edu)$/.test(p[p.length - 2]!) ? p.slice(-2).join(".") : p.length > 3 ? p.slice(-3).join(".") : h; };
+const orgDomains = (keys: Record<string, Iterable<string>>): Set<string> => { const s = new Set<string>(); for (const k of ["domain", "url"]) for (const v of keys[k] ?? []) { const d = registrableDomain(v); if (d.includes(".")) s.add(d); } return s; };
+/** The identity key an organization mention is filed under at build time: its registrable domain, else its
+ *  registry id, else "" (keyless). Same name + different key = different provisional records. */
+export function orgIdentityKey(keys: Record<string, string[]>): string {
+  const d = [...orgDomains(keys)].sort()[0];
+  if (d) return `domain:${d}`;
+  const r = (keys.registry_id ?? []).slice().sort()[0];
+  return r ? `registry_id:${r}` : "";
+}
+const hasAnyKey = (e: Provisional) => HARD_KEYS.some((k) => (e.keys[k] ?? []).length > 0);
+
 function hardKeyRelation(a: Provisional, b: Provisional): "match" | "conflict" | "none" {
   let out: "match" | "conflict" | "none" = "none";
   for (const k of HARD_KEYS) {
@@ -54,6 +67,12 @@ function hardKeyRelation(a: Provisional, b: Provisional): "match" | "conflict" |
     if (!ka.length || !kb.length) continue;
     if (ka.some((v) => kb.includes(v))) return "match";
     if (k === "email" || k === "licence" || k === "registry_id" || k === "orcid" || k === "docket") out = "conflict";
+  }
+  // two organizations on different registrable domains are different organizations (a company has one primary web
+  // identity; a person may have many emails, so this rule is org-only)
+  if (out === "none" && a.type === "organization" && b.type === "organization") {
+    const da = orgDomains(a.keys), db = orgDomains(b.keys);
+    if (da.size && db.size) out = [...da].some((d) => db.has(d)) ? "match" : "conflict";   // same registrable domain = same org
   }
   return out;
 }
@@ -193,9 +212,16 @@ export function resolve(ents: Provisional[], decisions: Decision[]): ResolveResu
   const keysOf = new Map<string, Record<string, Set<string>>>();
   const clusterKeys = (root: string) => keysOf.get(root) ?? keysOf.set(root, {}).get(root)!;
   for (const e of ents) for (const [k, vs] of Object.entries(e.keys)) for (const v of vs) (clusterKeys(e.id)[k] ??= new Set()).add(v);
+  const typeOf = new Map(ents.map((e) => [e.id, e.type]));
   const conflicts = (ra: string, rb: string) => {
     const ka = clusterKeys(ra), kb = clusterKeys(rb);
-    return ["email", "licence", "registry_id", "orcid", "docket"].some((k) => ka[k] && kb[k] && ![...ka[k]!].some((v) => kb[k]!.has(v)) && ka[k]!.size && kb[k]!.size);
+    if (["email", "licence", "registry_id", "orcid", "docket"].some((k) => ka[k] && kb[k] && ![...ka[k]!].some((v) => kb[k]!.has(v)) && ka[k]!.size && kb[k]!.size)) return true;
+    // organizations: disjoint registrable domains conflict unless some other identifier is shared
+    if (typeOf.get(ra) === "organization" && typeOf.get(rb) === "organization") {
+      const shared = HARD_KEYS.some((k) => ka[k] && kb[k] && [...ka[k]!].some((v) => kb[k]!.has(v)));
+      if (!shared) { const da = orgDomains(ka), db = orgDomains(kb); if (da.size && db.size && ![...da].some((d) => db.has(d))) return true; }
+    }
+    return false;
   };
   const union = (a: string, b: string): boolean => {
     const ra = find(a), rb = find(b);
@@ -211,6 +237,19 @@ export function resolve(ents: Provisional[], decisions: Decision[]): ResolveResu
   let hypotheses: PairScore[] = [];
   // 1. decisions first (records win)
   for (const d of decisions) if (d.verdict === "same") union(d.a_id, d.b_id);
+  // 1b. keyless organization mentions attach to the keyed record of the same name ONLY when that name is
+  //     unambiguous here (exactly one keyed record). Two keyed records with the same name (different domains) make
+  //     the keyless mentions ambiguous: they stay their own record and the judge gets a hypothesis for each side.
+  const orgsByName = new Map<string, Provisional[]>();
+  for (const e of ents) if (e.type === "organization") (orgsByName.get(e.name_norm) ?? orgsByName.set(e.name_norm, []).get(e.name_norm)!).push(e);
+  for (const group of orgsByName.values()) {
+    const keyed = group.filter(hasAnyKey), keyless = group.filter((e) => !hasAnyKey(e));
+    if (!keyed.length || !keyless.length) continue;
+    for (const k of keyless) {
+      if (keyed.length === 1) { const s = scorePair(k, keyed[0]!, idf); if (union(k.id, keyed[0]!.id)) merges.push({ ...s, verdict: "same", features: { ...s.features, name_unambiguous: true } }); }
+      else for (const c of keyed) { const s = scorePair(k, c, idf); if (s.verdict !== "not_same") hypotheses.push({ ...s, p: Math.max(s.p, HYPOTHESIS), verdict: "hypothesis", features: { ...s.features, name_ambiguous: keyed.length } }); }
+    }
+  }
   // 2. scored pairs
   const pairs = candidatePairs(ents, idf);
   const scored = pairs.map(([a, b]) => scorePair(a, b, idf)).sort((x, y) => y.p - x.p);
