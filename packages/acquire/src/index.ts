@@ -3,3 +3,4 @@ export * from "./markdown.ts";
 export * from "./blobs.ts";
 export * from "./ratelimit.ts";
 export * from "./search.ts";
+export * from "./capabilities/index.ts";
