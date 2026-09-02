@@ -756,7 +756,7 @@ async function triage(id?: string) {
   const { model, pairs } = await modelCandidatePairs({ records: recs.map((r) => ({ id: r.provisional_id, record: r.record, type: r.type })), min_cos: Number(s("min-cos") ?? 0.86), top_k: 6 });
   if (model.startsWith("unavailable") || model.startsWith("error")) return fail(`model scorer not available (${model}). Ensure Python + ml/score.py; set WG_PYTHON if needed.`);
   // candidates the resolver did NOT already merge, with no standing decision
-  const existing = new Set((await query<{ a: string; b: string }>(`SELECT a_id::text a, b_id::text b FROM resolution_decisions WHERE investigation_id=$1 AND superseded_by IS NULL`, [inv.id])).map((d) => (d.a < d.b ? `${d.a}|${d.b}` : `${d.b}|${d.a}`)));
+  const existing = new Set((await query<{ a: string; b: string }>(`SELECT a_id::text a, b_id::text b FROM resolution_decisions WHERE investigation_id=$1 AND superseded_by IS NULL AND id<>$1`, [inv.id])).map((d) => (d.a < d.b ? `${d.a}|${d.b}` : `${d.b}|${d.a}`)));
   const cands = pairs.filter((p) => entOf.get(p.a) !== entOf.get(p.b)).filter((p) => { const k = p.a < p.b ? `${p.a}|${p.b}` : `${p.b}|${p.a}`; return !existing.has(k); }).slice(0, Number(s("limit") ?? 30));
   console.log(`model ${model}: ${pairs.length} similar pairs → ${cands.length} new merge candidates to judge\n`);
   let usd = 0, merged = 0, decided = 0;
@@ -771,9 +771,9 @@ async function triage(id?: string) {
     let pa = p.a, pb = p.b; if (pa > pb) [pa, pb] = [pb, pa];
     const verdict = av === "same" ? "same" : av === "different" ? "not_same" : "related";
     const nid = uuidv7();
-    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [nid, inv.id, pa, pb]);
     await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, related_kind, method, score, note) VALUES ($1,$2,$3,$4,$5,$6,'llm',$7,$8)`,
       [nid, inv.id, pa, pb, verdict, v.related_kind || null, p.cos, `[model ${p.cos}] ${v.reason}`.slice(0, 900)]);
+    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL AND id<>$1`, [nid, inv.id, pa, pb]);
     decided++; if (verdict === "same") merged++;
   }
   console.log(`\njudged ${cands.length} model candidates · ${merged} merged · ${decided} decided · $${usd.toFixed(4)}`);
@@ -919,7 +919,7 @@ async function rulesCmd(sub?: string) {
 async function candidates(id?: string) {
   const inv = id ? await getInvestigation(id) : null;
   if (!inv) return fail("wg candidates <inv>");
-  const rows = await query<{ id: string; pattern: any; score: number; evidence: any; status: string }>(`SELECT id, pattern, score, evidence, status FROM hypotheses WHERE investigation_id=$1 AND kind='identity' AND status='open' ORDER BY score DESC LIMIT $2`, [inv.id, Number(s("limit") ?? 40)]);
+  const rows = await query<{ id: string; pattern: any; score: number; evidence: any; status: string }>(`SELECT id, pattern, score, evidence, status FROM hypotheses WHERE investigation_id=$1 AND kind='identity' AND status='open' AND (pattern->>'type') IS DISTINCT FROM 'account' ORDER BY score DESC LIMIT $2`, [inv.id, Number(s("limit") ?? 40)]);
   console.log(`${rows.length} open identity hypotheses (decide with: wg decide <inv> <a> <b> same|not_same|related:<kind>)\n`);
   for (const r of rows) {
     const f = r.evidence?.[0]?.features ?? {};
@@ -940,8 +940,8 @@ async function decide(id?: string, a?: string, b?: string, verdictRaw?: string) 
   const [verdict, kind] = verdictRaw.split(":") as [string, string | undefined];
   if (!["same", "not_same", "related"].includes(verdict)) return fail("verdict must be same | not_same | related:<kind>");
   const newId = uuidv7();
-  await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [newId, inv.id, pa, pb]);
   await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, related_kind, method, note) VALUES ($1,$2,$3,$4,$5,$6,'human',$7)`, [newId, inv.id, pa, pb, verdict, kind ?? null, s("note") ?? null]);
+    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL AND id<>$1`, [newId, inv.id, pa, pb]);
   await audit({ investigation_id: inv.id, actor: "human", action: "resolution.decide", detail: { a: pa, b: pb, verdict, kind } });
   await recordDecision(inv.id, { actor: "human", kind: verdict === "same" ? "merge" : "split", subject: { a: pa, b: pb, verdict, kind }, rationale: `${a} ${verdict}${kind ? ":" + kind : ""} ${b}${s("note") ? " — " + s("note") : ""}`, inputs: [{ kind: "decision", id: newId }], reversible_by: "wg decide / wg unmerge" });
   console.log(`decision recorded: ${short(pa)} ${verdict}${kind ? ":" + kind : ""} ${short(pb)} — rebuilding`);
@@ -957,8 +957,8 @@ async function unmerge(id?: string, ref?: string) {
   for (let i = 0; i < members.length; i++) for (let j = i + 1; j < members.length; j++) {
     let pa = members[i]!.provisional_id, pb = members[j]!.provisional_id; if (pa > pb) [pa, pb] = [pb, pa];
     const newId = uuidv7();
-    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [newId, inv.id, pa, pb]);
     await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, method, note) VALUES ($1,$2,$3,$4,'not_same','human','unmerge')`, [newId, inv.id, pa, pb]);
+    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL AND id<>$1`, [newId, inv.id, pa, pb]);
   }
   await audit({ investigation_id: inv.id, actor: "human", action: "resolution.unmerge", detail: { entity: eid, members: members.map((m) => m.name) } });
   await recordDecision(inv.id, { actor: "human", kind: "split", subject: { entity: eid, members: members.map((m) => m.provisional_id) }, rationale: `un-merged ${members.map((m) => m.name).join(" | ")}`, reversible_by: "wg decide <a> <b> same" });
@@ -995,7 +995,7 @@ async function sideFor(invId: string, provisionalId: string): Promise<Side> {
 async function judge(id?: string) {
   const inv = id ? await getInvestigation(id) : null;
   if (!inv) return fail("wg judge <inv> [--limit 20]");
-  const rows = await query<{ id: string; pattern: any; score: number }>(`SELECT id, pattern, score FROM hypotheses WHERE investigation_id=$1 AND kind='identity' AND status='open' ORDER BY score DESC LIMIT $2`, [inv.id, Number(s("limit") ?? 20)]);
+  const rows = await query<{ id: string; pattern: any; score: number }>(`SELECT id, pattern, score FROM hypotheses WHERE investigation_id=$1 AND kind='identity' AND status='open' AND (pattern->>'type') IS DISTINCT FROM 'account' ORDER BY score DESC LIMIT $2`, [inv.id, Number(s("limit") ?? 20)]);
   let usd = 0, decided = 0;
   for (const h of rows) {
     const a = await sideFor(inv.id, h.pattern.a_id), b = await sideFor(inv.id, h.pattern.b_id);
@@ -1015,9 +1015,9 @@ async function judge(id?: string) {
     let pa = h.pattern.a_id as string, pb = h.pattern.b_id as string; if (pa > pb) [pa, pb] = [pb, pa];
     const verdict = v.verdict === "same" ? "same" : v.verdict === "different" ? "not_same" : "related";
     const nid = uuidv7();
-    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL`, [nid, inv.id, pa, pb]);
     await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, related_kind, method, score, note) VALUES ($1,$2,$3,$4,$5,$6,'llm',$7,$8)`,
       [nid, inv.id, pa, pb, verdict, v.related_kind || null, h.score, `${v.reason} ${v.decisive_evidence ? "[" + v.decisive_evidence + "]" : ""}`.slice(0, 900)]);
+    await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL AND id<>$1`, [nid, inv.id, pa, pb]);
     decided++;
   }
   if (rows.length) await recordDecision(inv.id, { actor: "llm", kind: "refer", subject: { hypotheses: rows.map((h) => h.id) }, rationale: `judged ${rows.length} identity pairs: ${decided} decided (${usd.toFixed(4)} USD)`, reversible_by: "wg decide" });

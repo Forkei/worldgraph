@@ -160,3 +160,33 @@ He spotted three things in the published page; all three are fixed and committed
    `wg pivot --refetch` now bypasses the cache. Agents also `propose_mission`ed Alexh, member22 and Kim on
    their own — the pursuit behaviour works; what they find is bounded by how little the open web says about a
    small Minecraft community.
+
+## 8. The investigator (built after the maintainer's "agent in control" steer, same day)
+Direction change from him: **nothing automatic; one agent in full control; no sub-agents; hundreds of steps; all
+tools, all knowledge; powerful graph read/write; "ask the graph" as a one-shot run of the same tools.**
+Built and committed (`955a11a`…): 
+- **Search instrument** (`acquire/search.ts`): pages on every engine (Google/Bing/DuckDuckGo/Yandex/Yahoo via
+  SerpAPI with the right pagination params, Exa emulated), `lang`, "more pages" flag; an empty result is not an error.
+- **Playbooks** (`docs/playbooks/search.md`, `investigator.md`) written from real sources (Google operator docs,
+  SEOSLY Bing/Yandex lists, Compass OSINT sheet, X-Ray dorks, SerpApi pagination, Heuer & Pherson ACH/key
+  assumptions/devil's advocacy, Bellingcat method, Bazzell), served by `consult_playbook(topic)` (18 topics).
+- **`wg agent <inv> [--agent-model sonnet-5] [--ceiling usd] [--steps 600]`** (`plan/src/investigator.ts`): one
+  agent, seven tool families — search · read (claims + raw text) · capabilities (all 30 as tools + catalog) ·
+  graph read (dossier, ego, paths, timeline, contested, gaps, scoped read-only SQL, why) · graph write (link,
+  attribute, same_as, not_same_as, split, retract — quote-backed or recorded+reversible) · thinking (hypothesis
+  board, notebook, playbooks) · control (rebuild, judge, cost, finish). Transcript trims old tool results in
+  batches (prompt cache stays warm); notebook table `notes` (0019) is durable memory; optional $ ceiling ends
+  the run gracefully; no step cap in practice (600).
+- **First live run** on examplerealm.online (Sonnet 5 low): 69 steps, 130 tool calls, $1.82, 11 min. It read
+  the method, inventoried the graph, chased Alex Sample/Alexh, ran connectors, went to archived pages,
+  **retracted the gardening-site fusion itself with a reason**, kept a hypothesis board, and wrote a report
+  that meets the domain stopping bar (operator, infrastructure, money flow, three disambiguated homonyms,
+  legitimacy assessment with caveats). Report is in `notes` (kind=report).
+- Bugs found by that run and fixed: `graph_sql` leaked other investigations (now shadowed by scoped CTEs);
+  all decision writers inserted the superseding row *after* pointing at it (FK violation once a prior decision
+  existed) — order fixed + `id<>$1` guard in judge, decide, unmerge, split, not_same_as; judge no longer
+  spends verdicts on account pairs (an account is its identifier).
+**Not yet done from the plan:** the "ask the graph" one-shot entry point (`wg ask <inv> "question"` — same tools,
+read-only, ends with an answer); the model eval harness (Sonnet-low did well; Haiku/Gemini/open-weights not yet
+compared); a `read_url` that can fetch PDFs/archives explicitly; the old `wg run` loop still exists alongside
+(keep for scripted/cheap runs or retire — the maintainer's call).
