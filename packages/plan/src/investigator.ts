@@ -144,7 +144,7 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
     { name: "finish", description: "End your turn. In a conversation: call it when you are waiting on the person or the case is done for now (say what you have with send_message first; report may be empty). In a one-shot run: the final report (see consult_playbook('investigator/report')).", input_schema: { type: "object", properties: { report: { type: "string" }, verdict: { type: "string", enum: ["answered", "partial", "unanswerable"] } }, required: [] } },
   ];
 
-  let steps = 0;
+  let steps = 0, saidThisTurn = 0;
   const exec = async (name: string, input: Record<string, unknown>): Promise<string> => {
     steps++;
     const S = (k: string) => (input[k] == null ? "" : String(input[k])).trim();
@@ -373,7 +373,7 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
       case "rebuild": { const s = await deps.rebuild(); graphCache = null; return s; }
       case "judge": { const s = await deps.judge(); graphCache = null; return s; }
       case "cost": return `spent $${usdTotal().toFixed(3)} · ${steps} tool calls${deps.ceilingUsd ? ` · ceiling $${deps.ceilingUsd}` : " · no ceiling"}`;
-      case "send_message": { const text = S("text"); if (!text) return "empty"; if (deps.chat) await deps.chat.say(text); else await note("note", "message", text); return "sent"; }
+      case "send_message": { const text = S("text"); if (!text) return "empty"; if (deps.chat) { await deps.chat.say(text); saidThisTurn++; } else await note("note", "message", text); return "sent"; }
       case "ask_graph": {
         const q = S("question"); if (!q) return "question required";
         const r = await runInvestigator(inv, { ctx, model, question: q, maxSteps: 40, rebuild: async () => "read-only", judge: async () => "read-only", log: () => {} });
@@ -396,7 +396,7 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
         const g = await graph(); const rows = await query<{ id: string; label: string; members: string[]; note: string | null }>(`SELECT id, label, members, note FROM entity_groups WHERE investigation_id=$1 ORDER BY created_at`, [inv.id]);
         return rows.length ? rows.map((r) => `${short(r.id)} ${r.label}: ${r.members.map((m) => g.entities.get(m)?.name ?? short(m)).join(" | ")}${r.note ? " — " + r.note : ""}`).join("\n") : "no groups";
       }
-      case "finish": { report = S("report"); if (deps.chat) { if (report && report.length > 40) await deps.chat.say(report); return "ok — turn ended"; } await note(deps.question ? "note" : "report", deps.question ? `answer: ${deps.question.slice(0, 80)}` : (S("verdict") || "partial"), report); return "ok"; }
+      case "finish": { report = S("report"); if (deps.chat) { if (report && report.length > 40 && !saidThisTurn) await deps.chat.say(report); return "ok — turn ended"; } await note(deps.question ? "note" : "report", deps.question ? `answer: ${deps.question.slice(0, 80)}` : (S("verdict") || "partial"), report); return "ok"; }
       default: return "unknown tool";
     }
   };
