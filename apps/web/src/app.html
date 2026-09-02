@@ -190,16 +190,26 @@ const watching = new Map();   // jobId → { abort }
 function watchJob(jobId, onLine, onDone, from = 0) {
   if (watching.has(jobId)) return;
   const ctl = new AbortController(); watching.set(jobId, ctl);
+  let replay = [];   // history arrives first; it is handed over as ONE batch so the page does not jump per line
   fetch(`/api/job/${jobId}/stream?from=${from}`, { signal: ctl.signal }).then(async (r) => {
     const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
     for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); const parts = buf.split("\n\n"); buf = parts.pop();
-      for (const p of parts) { const ev = /event: (\w+)/.exec(p), dm = /data: (.*)/s.exec(p); if (!dm) continue; const data = JSON.parse(dm[1]);
-        if (ev && ev[1] === "done") { watching.delete(jobId); onDone?.(data); } else onLine(data); } }
+      for (const p of parts) { const ev = /event: (\w+)/.exec(p), dm = /data: (.*)/s.exec(p); if (!dm) continue; const data = JSON.parse(dm[1]); const kind = ev ? ev[1] : "log";
+        if (kind === "replayed") { const batch = replay; replay = null; if (batch.length) onLine(batch, false); }
+        else if (kind === "done") { if (replay) { const batch = replay; replay = null; if (batch.length) onLine(batch, false); } watching.delete(jobId); onDone?.(data); }
+        else if (replay) replay.push(data); else onLine([data], true); } }
     watching.delete(jobId);
   }).catch(() => { watching.delete(jobId); });
 }
 function stopWatching() { for (const c of watching.values()) c.abort(); watching.clear(); }
-function appendLog(el, t) { const line = document.createElement("div"); if (/^\s*·/.test(t)) line.className = "agent"; else if (/^\s*▸/.test(t)) line.className = "tool"; line.textContent = t; el.appendChild(line); const body = el.closest(".body"); if (body) body.scrollTop = body.scrollHeight; }
+function appendLog(el, lines, live = true) {
+  const body = el.closest(".body");
+  const atBottom = !body || body.scrollHeight - body.scrollTop - body.clientHeight < 80;   // follow only if the reader is already at the bottom
+  const frag = document.createDocumentFragment();
+  for (const t of [].concat(lines)) { const line = document.createElement("div"); if (/^\s*·/.test(t)) line.className = "agent"; else if (/^\s*▸/.test(t)) line.className = "tool"; line.textContent = t; frag.appendChild(line); }
+  el.appendChild(frag);
+  if (body && (atBottom || !live)) body.scrollTop = body.scrollHeight;
+}
 
 /* ---------- routing ---------- */
 let INV = null, META = null;
@@ -238,7 +248,7 @@ $("#f-go").onclick = async () => {
   const log = $("#new-log"); log.textContent = ""; $("#f-go").disabled = true;
   let created = null;
   const job = await post("/api/create", { seed, kind, goal: goal || undefined, url: url || undefined });
-  watchJob(job.id, (line) => { const m = /investigation ([0-9a-f]+) created/.exec(line); if (m) created = m[1]; appendLog(log, line); }, async () => {
+  watchJob(job.id, (lines, live) => { for (const line of lines) { const m = /investigation ([0-9a-f]+) created/.exec(line); if (m) created = m[1]; } appendLog(log, lines, live); }, async () => {
     $("#f-go").disabled = false;
     if (!created) { appendLog(log, "— could not create —"); return; }
     const list = await api("/api/investigations"); const inv = list.find((i) => i.id.startsWith(created));
@@ -377,7 +387,7 @@ function attachAsk(job, q) {
   if (!body.querySelector(`[data-job="${job.id}"]`)) body.insertAdjacentHTML("beforeend", `<div class="bubble me"><div class="who">you</div><div class="md">${esc(q)}</div></div><div class="bubble" data-job="${job.id}"><div class="who">the graph <span class="spin"></span></div><div class="log"></div><div class="md" hidden></div></div>`);
   const b = body.querySelector(`[data-job="${job.id}"]`), log = b.querySelector(".log"), out = b.querySelector(".md");
   let answering = false, answer = "";
-  watchJob(job.id, (line) => { if (/^══ answer/.test(line)) { answering = true; return; } if (answering) answer += line + "\n"; else if (/^\s*[▸·]/.test(line)) appendLog(log, line); body.scrollTop = body.scrollHeight; },
+  watchJob(job.id, (lines, live) => { const show = []; for (const line of lines) { if (/^══ answer/.test(line)) { answering = true; continue; } if (answering) answer += line + "\n"; else if (/^\s*[▸·]/.test(line)) show.push(line); } if (show.length) appendLog(log, show, live); body.scrollTop = body.scrollHeight; },
     () => { b.querySelector(".who").textContent = "the graph"; log.hidden = true; out.hidden = false; out.innerHTML = md(answer.trim() || "(no answer — see the run log)"); body.scrollTop = body.scrollHeight; });
   body.scrollTop = body.scrollHeight;
 }
@@ -407,9 +417,9 @@ async function loadRun() {
   if (!j) { st.innerHTML = `<span class="pill">no run yet</span>`; $("#run-go").disabled = false; $("#run-stop").hidden = true; return; }
   st.innerHTML = `<span class="pill ${j.status === "running" ? "live" : ""}">${j.status}</span> <span>started ${ago(j.startedAt)} ago${j.endedAt ? ", ran " + Math.round((j.endedAt - j.startedAt) / 60000) + " min" : ""}</span>`;
   $("#run-go").disabled = j.status === "running"; $("#run-stop").hidden = j.status !== "running";
-  if (runJob !== j.id) { runJob = j.id; log.textContent = ""; watchJob(j.id, (line) => appendLog(log, line), async () => { runJob = null; await loadGraph(); loadRun(); loadReport(); }); }
+  if (runJob !== j.id) { runJob = j.id; log.textContent = ""; watchJob(j.id, (lines, live) => appendLog(log, lines, live), async () => { await loadGraph(); loadRun(); loadReport(); }); }
 }
-$("#run-go").onclick = async () => { if (!INV) return; try { await post("/api/agent/" + INV, { ceiling: $("#run-ceiling").value, model: $("#run-model").value }); runJob = null; loadRun(); refreshLive(); } catch (e) { alert(e.message); } };
+$("#run-go").onclick = async () => { if (!INV) return; try { await post("/api/agent/" + INV, { ceiling: $("#run-ceiling").value, model: $("#run-model").value }); loadRun(); refreshLive(); } catch (e) { alert(e.message); } };
 $("#run-stop").onclick = async () => { if (!runJob) return; if (!confirm("Stop the investigator? Its work so far stays in the graph.")) return; await post(`/api/job/${runJob}/stop`); loadRun(); };
 
 route();

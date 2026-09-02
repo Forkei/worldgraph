@@ -49,6 +49,7 @@ function streamJob(res: ServerResponse, job: Job, from: number) {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
   const send = (ev: string, data: string) => { if (res.writableEnded || res.destroyed) return; try { res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`); } catch { /* client went away */ } };
   for (const l of job.lines.slice(Math.max(0, from))) send("log", l);
+  send("replayed", String(job.lines.length));   // everything before this is history; the client renders it as one batch
   if (job.status !== "running") { send("done", job.status); res.end(); return; }
   const listener = (line: string | null) => { if (line === null) { send("done", job.status); job.listeners.delete(listener); res.end(); } else send("log", line); };
   job.listeners.add(listener);
