@@ -300,7 +300,8 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
       const accounts = [...merged.values()].filter((e) => e.type === "account" && ["username", "handle", "email"].includes(e.kind ?? ""));
       const persons = [...merged.values()].filter((e) => e.type === "person");
       for (const acc of accounts) {
-        const ids = new Set([...(acc.keys.identifier ?? new Set<string>())].map((v) => v.toLowerCase().replace(/^@/, "")));
+        // a handle/username/email account IS its name; the identifier key is a bonus when present
+        const ids = new Set([...(acc.keys.identifier ?? new Set<string>()), ...acc.names.keys()].map((v) => v.toLowerCase().replace(/^@/, "")));
         if (!ids.size) continue;
         for (const person of persons) {
           const handles = [...(person.keys.handle ?? new Set<string>()), ...(person.keys.email ?? new Set<string>())].map((v) => v.toLowerCase().replace(/^@/, ""));
