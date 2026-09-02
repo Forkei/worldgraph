@@ -7,20 +7,20 @@ import type { MissionDraft } from "./dispatch.ts";
 
 export interface MissionRow {
   id: string; investigation_id: string; question_id: string | null; objective: string;
-  scope: Record<string, unknown>; frontier: string[]; state: string; verdict: string | null;
+  scope: Record<string, unknown>; frontier: string[]; state: string; verdict: string | null; launched_by?: string;
   score: number; score_parts: Record<string, number>; dedupe_key: string | null;
 }
 
-export async function saveMissions(investigationId: string, questionId: string | null, drafts: MissionDraft[]): Promise<MissionRow[]> {
+export async function saveMissions(investigationId: string, questionId: string | null, drafts: MissionDraft[], launchedBy = "dispatcher"): Promise<MissionRow[]> {
   const out: MissionRow[] = [];
   for (const d of drafts) {
     const rows = await query<MissionRow>(
       `INSERT INTO missions (id, investigation_id, question_id, objective, scope, frontier, score, score_parts, dedupe_key, state, launched_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'proposed','dispatcher')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'proposed',$10)
        ON CONFLICT (investigation_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND state IN ('proposed','running')
        DO UPDATE SET objective=EXCLUDED.objective, frontier=EXCLUDED.frontier, score=EXCLUDED.score, score_parts=EXCLUDED.score_parts
        RETURNING *`,
-      [uuidv7(), investigationId, questionId, d.objective, JSON.stringify(d.scope), JSON.stringify(d.frontier), d.score, JSON.stringify(d.score_parts), d.dedupe_key],
+      [uuidv7(), investigationId, questionId, d.objective, JSON.stringify(d.scope), JSON.stringify(d.frontier), d.score, JSON.stringify(d.score_parts), d.dedupe_key, launchedBy],
     );
     if (rows[0]) out.push(rows[0]);
   }
