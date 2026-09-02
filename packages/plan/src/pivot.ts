@@ -163,8 +163,18 @@ export function harvestPivots(g: Graph, subjectId?: string | null): PivotSeed[] 
   const out: PivotSeed[] = [];
   const push = (kind: PivotKind, value: string, from: string) => { if (value) out.push({ kind, value, depth: 0, from }); };
   const ACCOUNT_KIND: Record<string, PivotKind> = { email: "email", domain: "domain", hostname: "hostname", ip: "ip", username: "username", handle: "username", phone: "phone" };
+  // an account is worth pivoting on only when it hangs off the subject or a person/org — not when its only tie is
+  // another account (a co-hosted domain on a shared IP, a nameserver's nameserver): that is how the chain sprawls
+  const anchored = (id: string) => [...(g.out.get(id) ?? []), ...(g.inn.get(id) ?? [])].some((l) => {
+    const other = l.src === id ? l.dst : l.src;
+    if (other === subjectId) return true;
+    const t = g.entities.get(other)?.type;
+    return t === "person" || t === "organization";
+  });
   for (const e of g.entities.values()) {
-    if (e.type === "account") { const k = ACCOUNT_KIND[e.kind ?? ""]; if (k) push(k, e.keys.identifier?.[0] ?? e.name, "graph:account"); }
+    if (e.type !== "account" || e.id === subjectId) continue;
+    const k = ACCOUNT_KIND[e.kind ?? ""];
+    if (k && anchored(e.id)) push(k, e.keys.identifier?.[0] ?? e.name, "graph:account");
   }
   if (subjectId) {
     const s = g.entities.get(subjectId);

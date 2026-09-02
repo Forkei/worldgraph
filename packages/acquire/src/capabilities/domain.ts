@@ -247,14 +247,29 @@ export function parseReverseIp(text: string, ip: string, cdn = false): Capabilit
   r.raw = text;
   if (cdn) return r; // on a CDN the list is meaningless
   const domains = text.split(/\r?\n/).map((s) => s.trim().toLowerCase()).filter((s) => s && /^[\w.-]+\.[a-z]{2,}$/.test(s) && !/error|api count/i.test(s));
+  r.entities.push({ type: "ip_address", name: ip });
+  // a shared-hosting box carries hundreds of unrelated tenants: that is a fact about the IP, not a sibling list
+  if (domains.length > SHARED_HOST_MAX) {
+    r.attributes.push({ entity: ip, key: "cohosted_domains", value: String(domains.length) });
+    prov.note = `${domains.length} domains on this IP — shared hosting; siblings not derivable (kept as a count only)`;
+    return r;
+  }
   for (const d of domains) { r.entities.push({ type: "domain", name: d }); r.edges.push({ subject: ip, predicate: "co_hosts", object: d }); r.pivots.push({ kind: "domain", value: d, weak: true }); }
   r.pivots = dedupePivots(r.pivots);
   return r;
 }
+/** above this many tenants an IP is shared hosting, and the reverse-IP list says nothing about ownership */
+export const SHARED_HOST_MAX = 40;
+/** Reverse-IP is self-gating: it asks the ASN first and refuses to list siblings on CDN/shared networks. */
 export async function reverseIp(ip: string, opts: { cdn?: boolean } = {}): Promise<CapabilityResult> {
+  let cdn = opts.cdn;
+  if (cdn === undefined) {
+    try { const a = await asn(ip); cdn = a.attributes.find((x) => x.key === "is_cdn")?.value === "true"; } catch { cdn = false; }
+  }
+  if (cdn) return parseReverseIp("", ip, true);
   const url = `https://api.hackertarget.com/reverseiplookup/?q=${encodeURIComponent(ip)}`;
   const text = await getText(url, { rateKey: "hackertarget", minIntervalMs: 2000 });
-  const r = parseReverseIp(text, ip, opts.cdn); r.provenance.url = url; return r;
+  const r = parseReverseIp(text, ip, false); r.provenance.url = url; return r;
 }
 
 // ---------------------------------------------------------------------------

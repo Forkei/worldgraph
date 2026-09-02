@@ -1,6 +1,6 @@
 // Cluster A parse tests — fixtures are real response shapes captured live on 2026-09-01 (research/17).
 import { describe, it, expect } from "vitest";
-import { parseRdap, parseDns, parseCertSpotter, parseCrtsh, parseCdx, parseReverseIp, parseBgpview, parseRipestat, parseIpinfo, parseSecurityTxt, parseSitemap } from "../../src/capabilities/domain.ts";
+import { parseRdap, parseDns, parseCertSpotter, parseCrtsh, parseCdx, parseReverseIp, parseBgpview, parseRipestat, parseIpinfo, parseSecurityTxt, parseSitemap, SHARED_HOST_MAX } from "../../src/capabilities/domain.ts";
 
 describe("A1 rdap", () => {
   const j = {
@@ -119,5 +119,21 @@ describe("A8 web primitives", () => {
   it("sitemap.xml → url inventory pivots", () => {
     const r = parseSitemap("<urlset><url><loc>https://openai.com/about</loc></url><url><loc>https://openai.com/blog</loc></url></urlset>");
     expect(r.pivots.map((p) => p.value)).toEqual(["https://openai.com/about", "https://openai.com/blog"]);
+  });
+});
+
+describe("A6 reverse-ip shared hosting cap", () => {
+  it("keeps a short sibling list as weak domain pivots", () => {
+    const r = parseReverseIp("a.com\nb.org\n", "1.2.3.4");
+    expect(r.edges).toHaveLength(2);
+    expect(r.pivots.every((p) => p.weak)).toBe(true);
+  });
+  it("collapses a shared-hosting box (> SHARED_HOST_MAX tenants) into a count, no siblings, no pivots", () => {
+    const many = Array.from({ length: SHARED_HOST_MAX + 5 }, (_, i) => `tenant${i}.example`).join("\n");
+    const r = parseReverseIp(many, "1.2.3.4");
+    expect(r.edges).toHaveLength(0);
+    expect(r.pivots).toHaveLength(0);
+    expect(r.attributes.find((a) => a.key === "cohosted_domains")?.value).toBe(String(SHARED_HOST_MAX + 5));
+    expect(r.provenance.note).toMatch(/shared hosting/);
   });
 });
