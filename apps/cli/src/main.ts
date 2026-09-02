@@ -343,7 +343,8 @@ async function chatCmd(id?: string, message?: string) {
   await query(`INSERT INTO messages (id, investigation_id, session_id, role, body) VALUES ($1,$2,$3,'user',$4)`, [uuidv7(), inv.id, session.id, text]);
   const sid = session.id;
   const say = async (t: string) => { await query(`INSERT INTO messages (id, investigation_id, session_id, role, body) VALUES ($1,$2,$3,'agent',$4)`, [uuidv7(), inv.id, sid, t]); console.log(`@ ${t.replace(/\n/g, "\n@ ")}`); };
-  const activity = (t: string) => { console.log(`» ${t}`); void query(`INSERT INTO messages (id, investigation_id, session_id, role, body) VALUES ($1,$2,$3,'activity',$4)`, [uuidv7(), inv.id, sid, t]).catch(() => {}); };
+  const activity = (t: string) => { console.log(`» ${t}`); const p = query(`INSERT INTO messages (id, investigation_id, session_id, role, body) VALUES ($1,$2,$3,'activity',$4)`, [uuidv7(), inv.id, sid, t]).catch(() => {}); pending.push(p); return p; };
+  const pending: Promise<unknown>[] = [];
   const traceFile = process.env.WG_TRACE || null;
   const t0 = Date.now();
   const r = await runInvestigator(inv, {
@@ -354,7 +355,8 @@ async function chatCmd(id?: string, message?: string) {
     judge: async () => { await judge(inv.id); const st = await investigationStats(inv.id); return `judged; graph now ${st.relations} relations · ${st.attributes} attributes`; },
   });
   await query(`UPDATE sessions SET transcript=$2, turns=turns+1, usd=usd+$3, updated_at=now() WHERE id=$1`, [sid, JSON.stringify(r.messages), r.usd]);
-  activity(`Turn done · ${r.toolCalls} tool calls · $${r.usd.toFixed(2)} · ${Math.round((Date.now() - t0) / 60000)} min${r.stopped ? " · " + r.stopped : ""}`);
+  await activity(`Done · ${r.toolCalls} tool calls · $${r.usd.toFixed(2)} · ${Math.max(1, Math.round((Date.now() - t0) / 60000))} min${r.stopped ? " · " + r.stopped : ""}`);
+  await Promise.all(pending);
 }
 
 // `wg ask <inv> "question"` — ask the graph: a one-shot run of the investigator's read tools that answers from the

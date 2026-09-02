@@ -477,7 +477,7 @@ The graph's rules: every fact needs a source you read and a verbatim quote; a na
       case "ungroup": return `Ungrouping ${v("ref")}`;
       case "ask_graph": return `Asking the graph: ${v("question").slice(0, 120)}`;
       case "send_message": return null;
-      case "finish": return deps.chat ? "Waiting for you" : "Finished";
+      case "finish": return null;
       default: return null;
     }
   };
