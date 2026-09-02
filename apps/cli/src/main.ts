@@ -9,7 +9,7 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
-import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, webPrimitives, gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives, exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox, type CapabilityResult } from "@worldgraph/acquire";
+import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, webPrimitives, gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives, exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox, edgar, gleif, wikidata, nonprofit, usaspending, courtCases, companiesHouse, openCorporates, sanctions, type CapabilityResult } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, type Side } from "@worldgraph/extract";
 import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
@@ -25,7 +25,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -261,6 +261,15 @@ const CAP_RUNNERS: Record<string, CapRunner> = {
   "geo.map": (a) => nearbyPOIs(Number(a[0]), Number(a[1]), a[2] ? Number(a[2]) : undefined, a[3]),
   "geo.chronolocation": (a) => chronoCheck(Number(a[0]), Number(a[1]), a[2]!),
   "geo.aircraft": (a) => aircraftInBox(Number(a[0]), Number(a[1]), Number(a[2]), Number(a[3])),
+  "org.edgar": (a) => edgar(a.join(" ")),
+  "org.gleif": (a) => gleif(a.join(" ")),
+  "org.wikidata": (a) => wikidata(a.join(" ")),
+  "org.nonprofit": (a) => nonprofit(a.join(" ")),
+  "org.usaspending": (a) => usaspending(a.join(" ")),
+  "org.court": (a) => courtCases(a.join(" ")),
+  "org.companies_house": (a) => companiesHouse(a.join(" ")),
+  "org.opencorporates": (a) => openCorporates(a.join(" "), s("mode") === "officer" ? "officer" : "company"),
+  "org.sanctions": (a) => sanctions(a.join(" ")),
 };
 
 async function capCmd(id?: string, args: string[] = []) {

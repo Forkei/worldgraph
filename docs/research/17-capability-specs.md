@@ -676,3 +676,46 @@ processing phase).
 
 *All entries marked ✅ were verified with a live API call on 2026-09-01. This completes the first full pass across
 the three clusters; refinement and the shared-adapter framework design come after review.*
+
+---
+
+# Cluster D — Organizations (built 2026-09-02)
+
+The org backbone the arsenal lacked. Code: `packages/acquire/src/capabilities/org.ts`; tests:
+`test/capabilities/org.test.ts`. Six keyless sources verified live; three keyed sources parse-tested against their
+documented shapes and light up when the key is present. Input kind `org` (a company name, or a native id — CIK /
+LEI / Q-id / EIN / company number); Wikidata, court, sanctions and OpenCorporates also take `name` (a person).
+
+| Id | Source | Auth | Consumes → Emits | Grade | Verified |
+|---|---|---|---|---|---|
+| `org.edgar` | SEC EDGAR (`data.sec.gov/submissions`, `company_tickers.json`, company browser HTML) | none (UA with contact: `SEC_CONTACT_EMAIL`) | org → profile (CIK/EIN/SIC/state/HQ/tickers), `formerly_known_as`, notable `filed` edges (10-K/8-K/S-1/DEF 14A/13D/D…) + per-form counts, `domain` pivot | A | ✅ live |
+| `org.gleif` | GLEIF LEI API (`api.gleif.org/api/v1`) | none | org/LEI → LEI, jurisdiction, registry number, legal form, addresses, `subsidiary_of` / `ultimately_owned_by` (parents), children (first 50) → `org` pivots | A | ✅ live |
+| `org.wikidata` | Wikidata (`wbsearchentities`, `wbgetentities`, SPARQL for label + instance-of) | none | org **or person** → `founded_by`, `led_by`, `chaired_by`, `board_member`, `subsidiary_of`, `owned_by`, `owns`, `works_at`, `educated_at`, `spouse_of`, `member_of`, `headquartered_in`… with P580/P582 dates; attributes (founded, website, employees, revenue, ids: LEI/CIK/EIN/Companies House/ORCID, socials) → `name`/`org`/`domain`/`username` pivots | B | ✅ live |
+| `org.nonprofit` | ProPublica Nonprofit Explorer (IRS 990) | none | org/EIN → EIN, 501(c) status, NTEE, ruling date, per-year revenue/expenses/assets/officer comp, 990 PDF `url` pivots | A | ✅ live |
+| `org.usaspending` | USAspending.gov (`spending_by_award`, contracts + grants fetched separately) | none | org → `awarded_contract_by` per agency (aggregated count/total/span), top-5 `holds_contract` with award ids + URLs, agency `part_of` tree, sibling recipients | A | ✅ live |
+| `org.court` | CourtListener v4 search (RECAP dockets + opinions) | none (`COURTLISTENER_TOKEN` lifts limits) | org/name → `party_to` legal cases (court/docket/nature/url), `co_litigant` (sides unknown — RECAP lists parties flat), `counsel_in` (firms) | A | ✅ live |
+| `org.companies_house` | Companies House (UK) | free key `COMPANIES_HOUSE_API_KEY` | org/number → profile, `officer_of` (role/dates/DOB-month/nationality), `controls` (PSC + nature), `formerly_known_as` → `name`/`org` pivots | A | parse-tested |
+| `org.opencorporates` | OpenCorporates v0.4 | `OPENCORPORATES_API_TOKEN` | org → registry profile + officers; `--mode officer`: **person → every company they officer** (the shell-network pivot) | A | parse-tested |
+| `org.sanctions` | OpenSanctions `/search/default` | `OPENSANCTIONS_API_KEY` (free non-commercial) | org/name → `listed_in` datasets, `risk_topic` (sanction / role.pep / crime…), DOB / nationality / position | A | parse-tested |
+
+**Findings from the live probe:** EDGAR full-text search (`efts.sec.gov`) is 403 for non-browser clients and the
+Atom company feed returns `ARRAY(0x…)` for names (server bug) — the HTML company browser works and covers private
+filers/funds/insiders. `cik_lookup` returns 0 hits for everything. OpenCorporates and OpenSanctions both now
+require an API key even for search. GLEIF's `filter[fulltext]` is the right search (legalName filter is loose).
+USAspending refuses mixed award groups in one request. CourtListener's `q` is full-text — the parser keeps only
+cases whose caption or party list names the subject.
+
+**Decisions taken while building (override if you disagree):**
+- **Recurring-identical aggregation (HANDOFF §5.4) implemented** as `aggregateRecurring()` in `types.ts`: ≥3
+  dated numeric edges with the same subject/predicate/object collapse into one edge (from→to, value = total,
+  qualifiers count/total/first/last). Applied to FEC donations and USAspending task orders. Singletons verbatim.
+- **Vocabulary (HANDOFF §5.3)** — new predicates: `formerly_known_as`, `filed`, `subsidiary_of`,
+  `ultimately_owned_by`, `founded_by`, `led_by`, `chaired_by`, `board_member`, `owned_by`, `owns`,
+  `headquartered_in`, `awarded_contract_by`, `holds_contract`, `part_of`, `party_to`, `co_litigant`,
+  `counsel_in`, `officer_of`, `controls`, `listed_in`. New entity types/kinds: `legal_case`,
+  `organization/public_company|nonprofit|government_agency|law_firm`, `place`, `concept`.
+- **Pivot kind `org`** added (an organization name to look up), distinct from `name` (a person).
+- Wikidata entity types follow the *item* (P31 human → person) not the property, via one SPARQL call per lookup.
+
+**Not built (declared for later):** OpenOwnership (bulk only, no search API), OCCRP Aleph (keyed), INSEE Sirene
+(FR registry, keyed), LittleSis, Crunchbase (paid), EDGAR insider → issuer resolution (Form 4 XML per filing).
