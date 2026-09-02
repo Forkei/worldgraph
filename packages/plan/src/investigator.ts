@@ -25,6 +25,8 @@ export interface InvestigatorDeps {
   maxSteps?: number;
   log?: (s: string) => void;
   trace?: (s: string) => void;
+  /** "ask the graph": answer this question from the graph alone (read tools only), then finish */
+  question?: string;
 }
 export interface InvestigatorResult { report: string; usd: number; steps: number; toolCalls: number; stopped: string | null }
 
@@ -331,7 +333,7 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
       case "rebuild": { const s = await deps.rebuild(); graphCache = null; return s; }
       case "judge": { const s = await deps.judge(); graphCache = null; return s; }
       case "cost": return `spent $${usdTotal().toFixed(3)} · ${steps} tool calls${deps.ceilingUsd ? ` · ceiling $${deps.ceilingUsd}` : " · no ceiling"}`;
-      case "finish": { report = S("report"); await note("report", S("verdict") || "partial", report); return "ok"; }
+      case "finish": { report = S("report"); await note(deps.question ? "note" : "report", deps.question ? `answer: ${deps.question.slice(0, 80)}` : (S("verdict") || "partial"), report); return "ok"; }
       default: return "unknown tool";
     }
   };
@@ -357,8 +359,15 @@ The graph's rules (they protect the truth of what you build): every fact needs a
 
 Finish only when the stopping bar (consult_playbook("investigator/stopping")) is met, with a full report (consult_playbook("investigator/report")), or when the run is ending.`;
 
+  const READ_ONLY = new Set(["consult_playbook", "graph_lookup", "graph_ego", "graph_paths", "graph_timeline", "graph_contested", "graph_gaps", "graph_sql", "why", "notebook", "hypotheses", "cost", "finish"]);
+  const askSystem = `You answer a question about an investigation using ONLY its graph (entities, links, attributes, their evidence) and the investigator's notebook — no web, no new collection. Investigation: "${inv.seed.name}" (${inv.seed.kind}); goal: ${inv.goal_text}.
+
+QUESTION: ${deps.question}
+
+Work the graph like an analyst: look up the entities the question names, follow links, check paths and timelines, read the evidence (why) behind the facts that carry your answer, and note grades and contested flags. Then call finish with the answer: one paragraph with confidence in estimative language, then the evidence as claim/link ids with quotes and sources, then what the graph does not know.`;
   const r = await runToolLoop(model, {
-    system, user: `Begin. Frame the question, inventory the graph, write the plan, then work it.`, tools, exec,
+    system: deps.question ? askSystem : system, user: deps.question ? `Answer the question.` : `Begin. Frame the question, inventory the graph, write the plan, then work it.`,
+    tools: deps.question ? tools.filter((t) => READ_ONLY.has(t.name)) : tools, exec,
     maxSteps: deps.maxSteps ?? 600, keepRecent: 18, maxToolChars: 14_000,
     onStep: (t) => { log("   · " + t.replace(/\s+/g, " ").slice(0, 200)); trace("\n### " + t); },
     onTool: (name, input, out, u) => { log(`   ▸ ${name}(${JSON.stringify(input).slice(0, 120)}) → ${out.split("\n")[0]!.slice(0, 120)}`); trace(`\n>>> ${name} ${JSON.stringify(input)}\n<<< ${out.slice(0, 2000)}`); modelUsd = u; },

@@ -53,6 +53,7 @@ async function main() {
     case "pivot": return pivotCmd(sub ?? s("inv"), ...rest);
     case "export-html": return exportHtmlCmd(sub ?? s("inv"));
     case "agent": return agentCmd(sub ?? s("inv"));
+    case "ask": return askCmd(sub ?? s("inv"), rest.filter((x) => !x.startsWith("-")).join(" "));
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
     case "claims": return claims(sub ?? s("inv"));
@@ -279,6 +280,22 @@ async function agentCmd(id?: string) {
   });
   console.log(`\n══ report (${r.steps} steps · ${r.toolCalls} tool calls · $${r.usd.toFixed(2)} · ${Math.round((Date.now() - t0) / 60000)} min)${r.stopped ? " · stopped: " + r.stopped : ""} ══\n\n${r.report}\n`);
   console.log(`wg export-html ${short(inv.id)} --out case.html`);
+}
+
+// `wg ask <inv> "question"` — ask the graph: a one-shot run of the investigator's read tools that answers from the
+// graph alone (no web, no collection) and ends with an evidence-cited answer.
+async function askCmd(id?: string, question?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv || !question) return fail('wg ask <inv> "question" [--agent-model sonnet-5]');
+  const agentModel = getModel(s("agent-model") ?? "sonnet-5");
+  if (!hasKeyFor(agentModel)) return fail(`no API key for ${agentModel.label}`);
+  const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model: getModel(DEFAULT_MODEL), policy: getPolicy(inv.policy ?? "unrestricted"), registry: registry(), log: () => {} };
+  const r = await runInvestigator(inv, { ctx, model: agentModel, question, maxSteps: Number(s("steps") ?? 60), log: (m) => console.log(m), rebuild: async () => "read-only", judge: async () => "read-only" });
+  console.log(`
+══ answer (${r.toolCalls} tool calls · $${r.usd.toFixed(3)}) ══
+
+${r.report}
+`);
 }
 
 // `wg export-html <inv> [--out file]` — standalone shareable case-file page (graph + dossiers + evidence).
