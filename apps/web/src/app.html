@@ -113,6 +113,15 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
 .stat b{color:var(--ink);font-weight:600}
 .pill{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--panel2);color:var(--muted)}
 .pill.live{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+#gchips{position:absolute;top:52px;left:8px;right:8px;z-index:3;display:flex;gap:6px;flex-wrap:wrap}
+.chip{font-size:11px;padding:3px 9px;min-height:0;border-radius:999px;background:var(--panel);border:1px solid var(--line)}
+.feed{margin:2px 0 6px;font-size:12px;color:var(--muted)}
+.feed summary{list-style:none;cursor:pointer;display:flex;gap:8px;align-items:center;padding:6px 10px;background:var(--panel2);border-radius:10px}
+.feed summary::-webkit-details-marker{display:none}
+.feed summary .last{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.feed summary .n{font-variant-numeric:tabular-nums}
+.feed .lines{padding:6px 10px 2px 14px;display:grid;gap:3px;border-left:2px solid var(--line);margin:4px 0 0 12px}
+.sysnote{text-align:center;font-size:12px;color:var(--muted);padding:6px 0}
 @media (prefers-reduced-motion:reduce){#sheet{transition:none}}
 </style></head>
 <body>
@@ -143,35 +152,23 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
 
 <!-- INVESTIGATION -->
 <section class="screen" id="s-inv">
-  <div class="top"><button class="ghost" data-go="home">‹</button><div class="grow"><h1 id="inv-title"></h1><div class="sub" id="inv-sub"></div></div><span class="pill" id="inv-live" hidden>live</span></div>
+  <div class="top"><button class="ghost" data-go="home">‹</button><div class="grow"><h1 id="inv-title"></h1><div class="sub" id="inv-sub"></div></div><span class="pill live" id="inv-live" hidden>working</span></div>
   <div class="grow" style="position:relative;min-height:0">
-    <div class="pane on" id="p-graph">
+    <div class="pane" id="p-graph">
       <div id="stage">
         <canvas id="c"></canvas>
         <div id="gtools"><input id="find" placeholder="Find an entity…" autocomplete="off"><button id="btn-refresh" title="reload the graph">↻</button><button id="btn-fit">Fit</button></div>
+        <div id="gchips"></div>
         <div id="legend"></div>
         <div id="sheet"><div class="grip"></div><div class="hd"><div class="grow"><h2 id="sh-name"></h2><div class="type" id="sh-type"></div><div class="keys mono" id="sh-keys"></div></div><button class="ghost" id="sh-close" aria-label="close">✕</button></div><div id="sbody"></div></div>
       </div>
     </div>
-    <div class="pane" id="p-ask">
-      <div class="body pad chat" id="ask-body"><div class="empty">Ask the graph anything about this investigation. A one-shot analyst reads the graph and answers with cited evidence.</div></div>
-      <div class="composer"><textarea id="ask-q" rows="1" placeholder="Who runs it and how sure are we?"></textarea><button class="primary" id="ask-go">Ask</button></div>
-    </div>
-    <div class="pane" id="p-report">
-      <div class="body pad" id="report-body"><div class="empty">No report yet. Run the investigator.</div></div>
-    </div>
-    <div class="pane" id="p-run">
-      <div class="body pad">
-        <div class="form" style="margin-bottom:12px">
-          <div class="row2"><label>Ceiling ($)<input id="run-ceiling" type="number" inputmode="decimal" value="3" min="0.5" step="0.5"></label><label>Model<select id="run-model"><option value="sonnet-5">Sonnet 5</option><option value="sonnet-5-medium">Sonnet 5 (medium)</option><option value="haiku-4-5">Haiku 4.5</option><option value="opus-5">Opus 5</option></select></label></div>
-          <div style="display:flex;gap:8px;align-items:center"><button class="primary" id="run-go">Start the investigator</button><button id="run-stop" hidden>Stop</button></div>
-          <div class="stat" id="run-status"></div>
-        </div>
-        <div class="log" id="run-log"></div>
-      </div>
+    <div class="pane on" id="p-chat">
+      <div class="body pad chat" id="chat-body"></div>
+      <div class="composer"><textarea id="chat-q" rows="1" placeholder="Tell the investigator something, or ask…"></textarea><button class="primary" id="chat-go">Send</button><button id="chat-stop" hidden title="stop the current turn">Stop</button><button class="ghost" id="chat-clear" title="fresh context">⟲</button></div>
     </div>
   </div>
-  <div class="tabs"><button class="on" data-tab="graph">Graph</button><button data-tab="ask">Ask</button><button data-tab="report">Report</button><button data-tab="run">Run</button></div>
+  <div class="tabs"><button data-tab="graph">Graph</button><button class="on" data-tab="chat">Chat</button></div>
 </section>
 
 <script>
@@ -184,6 +181,7 @@ const GLABEL = {established:"established",corroborated:"corroborated",single_sou
 const typeVar = (t) => "--" + (TYPES.includes(t) ? t : "other");
 async function api(u, opt) { const r = await fetch(u, opt); if (!r.ok) throw new Error(await r.text()); return r.json(); }
 const post = (u, body) => api(u, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+const ago = (t) => { const s = Math.max(0, (Date.now() - new Date(t).getTime()) / 1000); return s < 60 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
 // graph ids in prose (link:845710f1, attr:a379c051, entity:6c15a64c) become small tappable chips that open the evidence
 const md = (t) => esc(t).replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>")
   .replace(/\[?\b(link|attr|attribute|entity|claim):([0-9a-f]{6,})\]?/g, (m, k, id) => `<button class="ref" data-k="${k === "attr" ? "attribute" : k}" data-id="${id}">${k === "entity" ? "who" : "evidence"}</button>`);
@@ -191,7 +189,7 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest(".ref"); if (!b || !G) return;
   if (b.nextElementSibling && b.nextElementSibling.classList.contains("ev")) { b.nextElementSibling.remove(); return; }
   const k = b.dataset.k, pre = b.dataset.id;
-  if (k === "entity") { const ent = G.entities.find((x) => x.id.startsWith(pre)); if (ent) { location.hash = "#/inv/" + INV + "/graph"; setTimeout(() => { openNode(ent.id); focusNode(ent.id); }, 150); } return; }
+  if (k === "entity") { const ent = G.entities.find((x) => x.id.startsWith(pre)); if (ent) { location.hash = "#/inv/" + INV + "/graph"; setTimeout(() => { revealEntity(ent.id); openNode(ent.id); focusNode(ent.id); }, 150); } return; }
   const pool = k === "link" ? G.links : G.attrs; const hit = pool.find((x) => x.id.startsWith(pre)); if (!hit) return;
   b.insertAdjacentHTML("afterend", `<div class="ev"><span class="spin"></span></div>`);
   try { const r = await api(`/api/why/${INV}/${k}/${hit.id}`);
@@ -200,14 +198,13 @@ document.addEventListener("click", async (e) => {
     b.nextElementSibling.innerHTML = h || "no provenance";
   } catch (err) { b.nextElementSibling.textContent = "error: " + err.message; }
 });
-const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
 
 /* ---------- jobs: a run lives on the server; the page only watches it ---------- */
-const watching = new Map();   // jobId → { abort }
+const watching = new Map();
 function watchJob(jobId, onLine, onDone, from = 0) {
   if (watching.has(jobId)) return;
   const ctl = new AbortController(); watching.set(jobId, ctl);
-  let replay = [];   // history arrives first; it is handed over as ONE batch so the page does not jump per line
+  let replay = [];
   fetch(`/api/job/${jobId}/stream?from=${from}`, { signal: ctl.signal }).then(async (r) => {
     const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
     for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); const parts = buf.split("\n\n"); buf = parts.pop();
@@ -221,7 +218,7 @@ function watchJob(jobId, onLine, onDone, from = 0) {
 function stopWatching() { for (const c of watching.values()) c.abort(); watching.clear(); }
 function appendLog(el, lines, live = true) {
   const body = el.closest(".body");
-  const atBottom = !body || body.scrollHeight - body.scrollTop - body.clientHeight < 80;   // follow only if the reader is already at the bottom
+  const atBottom = !body || body.scrollHeight - body.scrollTop - body.clientHeight < 80;
   const frag = document.createDocumentFragment();
   for (const t of [].concat(lines)) { const line = document.createElement("div"); if (/^\s*·/.test(t)) line.className = "agent"; else if (/^\s*▸/.test(t)) line.className = "tool"; line.textContent = t; frag.appendChild(line); }
   el.appendChild(frag);
@@ -236,8 +233,8 @@ $("#btn-new").onclick = () => { location.hash = "#/new"; };
 function route() {
   const h = location.hash || "#/";
   const m = /^#\/inv\/([0-9a-f-]+)(?:\/(\w+))?/.exec(h);
-  if (m) { openInv(m[1], m[2] || "graph"); return; }
-  stopWatching();
+  if (m) { openInv(m[1], m[2] || "chat"); return; }
+  stopWatching(); clearInterval(chatTimer);
   if (h === "#/new") { show("new"); return; }
   show("home"); loadHome();
 }
@@ -252,7 +249,7 @@ async function loadHome() {
   el.innerHTML = list.map((i) => `<div class="card" data-id="${i.id}">
     <div class="t"><span>${esc(i.seed?.name || i.title)}${i.live ? ' <span class="pill live">live</span>' : ""}</span><span class="k">${esc(i.seed?.kind || "")}</span></div>
     <div class="g">${esc(i.goal || "")}</div>
-    <div class="m"><span><b>${i.entities}</b> entities</span><span><b>${i.stats?.relations ?? 0}</b> links</span>${i.reports ? `<span><b>${i.reports}</b> report${i.reports === 1 ? "" : "s"}</span>` : ""}<span>${esc(String(i.created_at).slice(0, 10))}</span></div>
+    <div class="m"><span><b>${i.entities}</b> entities</span><span><b>${i.stats?.relations ?? 0}</b> links</span><span>${esc(String(i.created_at).slice(0, 10))}</span></div>
   </div>`).join("");
   el.querySelectorAll(".card").forEach((c) => c.onclick = () => { location.hash = "#/inv/" + c.dataset.id; });
   clearTimeout(homeTimer); if (list.some((i) => i.live) && $("#s-home").classList.contains("on")) homeTimer = setTimeout(loadHome, 8000);
@@ -270,45 +267,59 @@ $("#f-go").onclick = async () => {
     if (!created) { appendLog(log, "— could not create —"); return; }
     const list = await api("/api/investigations"); const inv = list.find((i) => i.id.startsWith(created));
     if (!inv) return;
-    await post("/api/agent/" + inv.id, { ceiling, model: "sonnet-5" }).catch((e) => appendLog(log, "could not start: " + e.message));
-    location.hash = "#/inv/" + inv.id + "/run";
+    await post("/api/chat/" + inv.id, { message: "", ceiling, model: "sonnet-5" }).catch((e) => appendLog(log, "could not start: " + e.message));
+    location.hash = "#/inv/" + inv.id + "/chat";
   });
 };
 
 /* ---------- investigation ---------- */
 let G = null, nodes = [], links = [], nmap = new Map(), byEnt = new Map(), edgesBy = new Map(), attrsBy = new Map();
+let groups = [], expanded = new Set();   // agent-defined groups; a collapsed group is one node
 async function openInv(id, tab) {
   show("inv");
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("on", p.id === "p-" + tab));
   if (INV !== id) {
-    INV = id; stopWatching(); closeSheet(); $("#ask-body").innerHTML = ""; $("#run-log").textContent = ""; $("#run-status").textContent = "";
+    INV = id; stopWatching(); closeSheet(); $("#chat-body").innerHTML = ""; lastMsgAt = null; expanded = new Set();
     const list = await api("/api/investigations"); META = list.find((i) => i.id === id) || null;
     $("#inv-title").textContent = META?.seed?.name || "";
     await loadGraph();
-    loadAskHistory();
   }
   refreshLive();
-  if (tab === "report") loadReport();
-  if (tab === "run") loadRun();
-  if (tab === "ask") loadAskHistory();
+  clearInterval(chatTimer);
+  if (tab === "chat") { loadChat(); chatTimer = setInterval(loadChat, 3000); }
   if (tab === "graph") { resize(); setTimeout(fit, 200); }
 }
 document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => { location.hash = "#/inv/" + INV + "/" + b.dataset.tab; });
-async function refreshLive() { if (!INV) return; const js = await api("/api/jobs?inv=" + INV); const live = js.some((j) => j.status === "running"); $("#inv-live").hidden = !live; if (live && $("#s-inv").classList.contains("on")) setTimeout(refreshLive, 6000); }
+let liveNow = false;
+async function refreshLive() { if (!INV) return; const js = await api("/api/jobs?inv=" + INV); liveNow = js.some((j) => j.status === "running"); $("#inv-live").hidden = !liveNow; $("#chat-stop").hidden = !liveNow; $("#chat-go").disabled = liveNow; if ($("#s-inv").classList.contains("on")) setTimeout(refreshLive, 5000); }
 async function loadGraph() {
   G = await api("/api/graph/" + INV);
   byEnt = new Map(G.entities.map((e) => [e.id, e]));
+  groups = (G.groups || []).filter((g) => g.members.filter((m) => byEnt.has(m)).length >= 2);
+  $("#inv-sub").textContent = `${G.entities.length} entities · ${G.links.length} links · ${G.sources} sources`;
+  layoutGraph();
+}
+/** which nodes are drawn: members of collapsed groups fold into one group node; links re-route to it */
+function layoutGraph() {
   const old = new Map(nodes.map((n) => [n.id, n]));
-  nodes = G.entities.map((e) => { const o = old.get(e.id); return { ...e, x: o?.x ?? W()/2 + (Math.random()-.5)*500, y: o?.y ?? H()/2 + (Math.random()-.5)*500, vx: 0, vy: 0, r: 5 + Math.min(20, Math.sqrt(+e.claims || 1) * 3) }; });
+  const memberOf = new Map(); for (const g of groups) if (!expanded.has(g.id)) for (const m of g.members) memberOf.set(m, g.id);
+  const visible = G.entities.filter((e) => !memberOf.has(e.id)).map((e) => ({ ...e, group: null }));
+  for (const g of groups) if (!expanded.has(g.id)) { const ms = g.members.filter((m) => byEnt.has(m)); visible.push({ id: "g:" + g.id, name: g.label, type: "group", kind: null, claims: ms.reduce((s, m) => s + (+byEnt.get(m).claims || 0), 0), keys: {}, group: g, members: ms }); }
+  const inGroup = new Map(); for (const g of groups) if (expanded.has(g.id)) for (const m of g.members) inGroup.set(m, g);
+  nodes = visible.map((e) => { const o = old.get(e.id); const anchor = e.group ? null : null; return { ...e, expandedGroup: inGroup.get(e.id) || null, x: o?.x ?? W()/2 + (Math.random()-.5)*500, y: o?.y ?? H()/2 + (Math.random()-.5)*500, vx: 0, vy: 0, r: e.type === "group" ? 8 + Math.min(24, Math.sqrt(+e.claims || 1) * 2.5) : 5 + Math.min(20, Math.sqrt(+e.claims || 1) * 3) }; });
   nmap = new Map(nodes.map((n) => [n.id, n]));
-  links = G.links.map((l) => ({ ...l, a: nmap.get(l.s), b: nmap.get(l.o) })).filter((l) => l.a && l.b);
-  edgesBy = new Map(); for (const l of links) for (const k of [l.s, l.o]) (edgesBy.get(k) || edgesBy.set(k, []).get(k)).push(l);
+  const route = (id) => memberOf.has(id) ? "g:" + memberOf.get(id) : id;
+  const seen = new Set();
+  links = G.links.map((l) => ({ ...l, s: route(l.s), o: route(l.o) })).filter((l) => l.s !== l.o).map((l) => ({ ...l, a: nmap.get(l.s), b: nmap.get(l.o) })).filter((l) => l.a && l.b && !seen.has(l.s + "|" + l.p + "|" + l.o) && seen.add(l.s + "|" + l.p + "|" + l.o));
+  edgesBy = new Map(); for (const l of G.links) for (const k of [l.s, l.o]) (edgesBy.get(k) || edgesBy.set(k, []).get(k)).push(l);
   attrsBy = new Map(); for (const a of G.attrs) (attrsBy.get(a.e) || attrsBy.set(a.e, []).get(a.e)).push(a);
-  $("#inv-sub").textContent = `${nodes.length} entities · ${links.length} links · ${G.sources} sources`;
-  $("#legend").innerHTML = TYPES.filter((t) => nodes.some((n) => n.type === t)).map((t) => `<div class="r"><span class="dot" style="background:${cssv("--" + t)}"></span>${t.replace("_", " ")}</div>`).join("") + GRADES.slice(0, 3).map((g) => `<div class="r"><span class="ln" style="border-color:${cssv("--" + g)}"></span>${GLABEL[g]}</div>`).join("");
+  $("#legend").innerHTML = TYPES.filter((t) => G.entities.some((n) => n.type === t)).map((t) => `<div class="r"><span class="dot" style="background:${cssv("--" + t)}"></span>${t.replace("_", " ")}</div>`).join("") + (groups.length ? `<div class="r"><span class="dot" style="background:var(--ink);opacity:.6"></span>group (tap to open)</div>` : "") + GRADES.slice(0, 3).map((g) => `<div class="r"><span class="ln" style="border-color:${cssv("--" + g)}"></span>${GLABEL[g]}</div>`).join("");
+  $("#gchips").innerHTML = [...expanded].map((gid) => { const g = groups.find((x) => x.id === gid); return g ? `<button class="chip" data-collapse="${gid}">▣ ${esc(g.label)} ×</button>` : ""; }).join("");
+  $("#gchips").querySelectorAll("[data-collapse]").forEach((b) => b.onclick = () => { expanded.delete(b.dataset.collapse); selected = null; closeSheet(); layoutGraph(); });
   hot = 300; if (!old.size) setTimeout(fit, 900);
 }
+function revealEntity(id) { for (const g of groups) if (!expanded.has(g.id) && g.members.includes(id)) { expanded.add(g.id); layoutGraph(); } }
 
 /* ---------- canvas ---------- */
 const canvas = $("#c"), ctx = canvas.getContext("2d");
@@ -322,6 +333,8 @@ function step() {
     for (let j = i+1; j < nodes.length; j++) { const b = nodes[j]; let dx = a.x-b.x, dy = a.y-b.y, d2 = dx*dx+dy*dy || 1, d = Math.sqrt(d2); const rep = (a.r+b.r)*60/d2; a.vx += dx/d*rep; a.vy += dy/d*rep; b.vx -= dx/d*rep; b.vy -= dy/d*rep; }
     a.vx += (W()/2-a.x)*0.0012; a.vy += (H()/2-a.y)*0.0012; }
   for (const l of links) { const dx = l.b.x-l.a.x, dy = l.b.y-l.a.y, d = Math.hypot(dx,dy) || 1, f = (d-100)*0.02; l.a.vx += dx/d*f; l.a.vy += dy/d*f; l.b.vx -= dx/d*f; l.b.vy -= dy/d*f; }
+  // members of an expanded group huddle together
+  for (const n of nodes) if (n.expandedGroup) for (const m of nodes) if (m !== n && m.expandedGroup === n.expandedGroup) { const dx = m.x-n.x, dy = m.y-n.y, d = Math.hypot(dx,dy) || 1, f = (d-70)*0.01; n.vx += dx/d*f; n.vy += dy/d*f; }
   for (const n of nodes) { if (n === dragging) continue; n.x += n.vx *= 0.85; n.y += n.vy *= 0.85; }
 }
 function draw() {
@@ -333,10 +346,12 @@ function draw() {
       ctx.setLineDash(l.grade === "disputed" ? [4,3] : l.derived ? [2,3] : []);
       ctx.beginPath(); ctx.moveTo(l.a.x,l.a.y); ctx.lineTo(l.b.x,l.b.y); ctx.stroke(); }
     ctx.setLineDash([]); ctx.globalAlpha = 1;
-    for (const n of nodes) { const hl = selected && (n.id === selected || (edgesBy.get(selected)||[]).some((l) => l.s === n.id || l.o === n.id)), dim = selected && !hl;
-      ctx.globalAlpha = dim ? 0.22 : 1; ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.fillStyle = cssv(typeVar(n.type)); ctx.fill();
-      if (n.id === selected) { ctx.lineWidth = 3; ctx.strokeStyle = cssv("--ink"); ctx.stroke(); }
-      if (scale > 0.45 && (hl || n.r > 9 || !selected)) { ctx.globalAlpha = dim ? 0.3 : 1; ctx.fillStyle = cssv("--ink"); ctx.font = (n.id === selected ? "600 13px" : "500 11px") + ' "IBM Plex Sans",sans-serif'; ctx.textAlign = "center"; const t = (n.name||"").length > 24 ? n.name.slice(0,23)+"…" : n.name; ctx.fillText(t, n.x, n.y + n.r + 12); } }
+    for (const n of nodes) { const hl = selected && (n.id === selected || (edgesBy.get(selected)||[]).some((l) => l.s === n.id || l.o === n.id) || (n.type === "group" && n.members.some((m) => (edgesBy.get(selected)||[]).some((l) => l.s === m || l.o === m)))), dim = selected && !hl;
+      ctx.globalAlpha = dim ? 0.22 : 1;
+      if (n.type === "group") { ctx.fillStyle = cssv("--panel"); ctx.strokeStyle = cssv("--ink"); ctx.lineWidth = 2; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.fill(); ctx.stroke(); ctx.setLineDash([]); const c = n.members.slice(0, 6); c.forEach((m, i) => { const e = byEnt.get(m); const a = i / c.length * 6.283; ctx.beginPath(); ctx.arc(n.x + Math.cos(a) * n.r * 0.5, n.y + Math.sin(a) * n.r * 0.5, 3.5, 0, 7); ctx.fillStyle = cssv(typeVar(e?.type)); ctx.fill(); }); }
+      else { ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.fillStyle = cssv(typeVar(n.type)); ctx.fill(); if (n.expandedGroup) { ctx.strokeStyle = cssv("--ink"); ctx.lineWidth = 1; ctx.setLineDash([2,3]); ctx.beginPath(); ctx.arc(n.x,n.y,n.r+4,0,7); ctx.stroke(); ctx.setLineDash([]); } }
+      if (n.id === selected) { ctx.lineWidth = 3; ctx.strokeStyle = cssv("--ink"); ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.stroke(); }
+      if (scale > 0.45 && (hl || n.r > 9 || !selected)) { ctx.globalAlpha = dim ? 0.3 : 1; ctx.fillStyle = cssv("--ink"); ctx.font = (n.id === selected || n.type === "group" ? "600 12.5px" : "500 11px") + ' "IBM Plex Sans",sans-serif'; ctx.textAlign = "center"; const label = n.type === "group" ? `${n.name} (${n.members.length})` : n.name; const t = label.length > 26 ? label.slice(0,25)+"…" : label; ctx.fillText(t, n.x, n.y + n.r + 12); } }
     ctx.restore();
   }
   requestAnimationFrame(draw);
@@ -346,13 +361,13 @@ const toWld = (px,py) => { const r = canvas.getBoundingClientRect(); return { x:
 function pick(px,py) { const w = toWld(px,py); let best = null, bd = 1e9; for (const n of nodes) { const d = Math.hypot(n.x-w.x, n.y-w.y); if (d < n.r+10 && d < bd) { bd = d; best = n; } } return best; }
 canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); moved = false; if (ptrs.size === 1) { down = pick(e.clientX,e.clientY); if (down) dragging = down; last = {x:e.clientX,y:e.clientY}; } if (ptrs.size === 2) { const p = [...ptrs.values()]; pinch = Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y); dragging = null; } });
 canvas.addEventListener("pointermove", (e) => { if (!ptrs.has(e.pointerId)) return; ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (ptrs.size === 2) { const p = [...ptrs.values()], d = Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y), cx = (p[0].x+p[1].x)/2, cy = (p[0].y+p[1].y)/2; if (pinch) { const f = d/pinch, w = toWld(cx,cy), r = canvas.getBoundingClientRect(); scale = Math.max(.15, Math.min(4, scale*f)); ox = cx-r.left-w.x*scale; oy = cy-r.top-w.y*scale; } pinch = d; moved = true; return; } if (!last) return; const dx = e.clientX-last.x, dy = e.clientY-last.y; if (Math.abs(dx)+Math.abs(dy) > 3) moved = true; if (dragging) { const w = toWld(e.clientX,e.clientY); dragging.x = w.x; dragging.y = w.y; dragging.vx = dragging.vy = 0; hot = Math.max(hot, 60); } else { ox += dx; oy += dy; } last = {x:e.clientX,y:e.clientY}; });
-canvas.addEventListener("pointerup", (e) => { ptrs.delete(e.pointerId); if (!moved && down) openNode(down.id); else if (!moved && !down) { selected = null; closeSheet(); } dragging = null; last = null; down = null; if (ptrs.size < 2) pinch = 0; });
+canvas.addEventListener("pointerup", (e) => { ptrs.delete(e.pointerId); if (!moved && down) { if (down.type === "group") { expanded.add(down.group.id); selected = null; closeSheet(); layoutGraph(); } else openNode(down.id); } else if (!moved && !down) { selected = null; closeSheet(); } dragging = null; last = null; down = null; if (ptrs.size < 2) pinch = 0; });
 canvas.addEventListener("wheel", (e) => { e.preventDefault(); const f = Math.exp(-e.deltaY*0.0015), w = toWld(e.clientX,e.clientY), r = canvas.getBoundingClientRect(); scale = Math.max(.15, Math.min(4, scale*f)); ox = e.clientX-r.left-w.x*scale; oy = e.clientY-r.top-w.y*scale; }, { passive:false });
 function fit() { if (!nodes.length) return; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for (const n of nodes) { x0=Math.min(x0,n.x); y0=Math.min(y0,n.y); x1=Math.max(x1,n.x); y1=Math.max(y1,n.y); } const pad = 50; scale = Math.max(.15, Math.min(2, Math.min((W()-pad*2)/((x1-x0)||1), (H()-pad*2-60)/((y1-y0)||1)))); ox = W()/2 - (x0+x1)/2*scale; oy = H()/2 + 20 - (y0+y1)/2*scale; }
 function focusNode(id) { const n = nmap.get(id); if (!n) return; scale = Math.max(scale, 1); ox = W()/2 - n.x*scale; oy = H()/3 - n.y*scale; }
 $("#btn-fit").onclick = fit;
 $("#btn-refresh").onclick = () => loadGraph();
-$("#find").addEventListener("keydown", (e) => { if (e.key !== "Enter") return; const q = e.target.value.trim().toLowerCase(); if (!q) return; const n = nodes.find((x) => x.name.toLowerCase() === q) || nodes.find((x) => x.name.toLowerCase().includes(q)); if (n) { openNode(n.id); focusNode(n.id); e.target.blur(); } });
+$("#find").addEventListener("keydown", (e) => { if (e.key !== "Enter") return; const q = e.target.value.trim().toLowerCase(); if (!q) return; const n = G.entities.find((x) => x.name.toLowerCase() === q) || G.entities.find((x) => x.name.toLowerCase().includes(q)); if (n) { revealEntity(n.id); openNode(n.id); focusNode(n.id); e.target.blur(); } });
 
 /* ---------- dossier sheet ---------- */
 const gchip = (g) => `<span class="gchip" style="background:${cssv("--" + (g || "single_source"))}">${GLABEL[g] || g}</span>`;
@@ -363,8 +378,9 @@ function openNode(id) {
   const out = (edgesBy.get(id) || []).filter((l) => l.s === id).sort((a,b) => GRADES.indexOf(a.grade) - GRADES.indexOf(b.grade));
   const inc = (edgesBy.get(id) || []).filter((l) => l.o === id).sort((a,b) => GRADES.indexOf(a.grade) - GRADES.indexOf(b.grade));
   const at = attrsBy.get(id) || [];
+  const grp = groups.find((g) => g.members.includes(id));
   $("#sh-name").textContent = n.name;
-  $("#sh-type").innerHTML = `<span class="sw" style="background:${cssv(typeVar(n.type))}"></span>${esc(n.type)}${n.kind ? " · " + esc(n.kind) : ""} · ${n.claims} claims`;
+  $("#sh-type").innerHTML = `<span class="sw" style="background:${cssv(typeVar(n.type))}"></span>${esc(n.type)}${n.kind ? " · " + esc(n.kind) : ""} · ${n.claims} claims${grp ? ` · in group “${esc(grp.label)}”` : ""}`;
   const keys = n.keys && Object.keys(n.keys).length ? Object.entries(n.keys).map(([k,v]) => `${k}=${[].concat(v).join(",")}`).join("  ") : "";
   $("#sh-keys").textContent = keys;
   const pred = (l) => `${esc(l.p)}${l.ps ? ` <span class="q">${esc(l.ps.replace(/^candidate:/, "").replace(/^derived:/, "derived "))}</span>` : ""}`;
@@ -377,7 +393,7 @@ function openNode(id) {
 function closeSheet() { $("#sheet").classList.remove("open"); }
 $("#sh-close").onclick = () => { selected = null; closeSheet(); };
 $("#sbody").addEventListener("click", async (e) => {
-  const go = e.target.closest("[data-go-ent]"); if (go) { openNode(go.dataset.goEnt); focusNode(go.dataset.goEnt); return; }
+  const go = e.target.closest("[data-go-ent]"); if (go) { revealEntity(go.dataset.goEnt); openNode(go.dataset.goEnt); focusNode(go.dataset.goEnt); return; }
   const w = e.target.closest(".why"); if (!w) return;
   if (w.nextElementSibling && w.nextElementSibling.classList.contains("ev")) { w.nextElementSibling.remove(); return; }
   w.insertAdjacentHTML("afterend", `<div class="ev"><span class="spin"></span></div>`);
@@ -389,55 +405,39 @@ $("#sbody").addEventListener("click", async (e) => {
   } catch (err) { w.nextElementSibling.textContent = "error: " + err.message; }
 });
 
-/* ---------- ask ---------- */
-async function loadAskHistory() {
-  const body = $("#ask-body");
-  const notes = await api("/api/notes/" + INV);
-  const answers = notes.filter((n) => n.kind === "note" && /^answer:/.test(n.title || "")).reverse();
-  const jobsList = (await api("/api/jobs?inv=" + INV)).filter((j) => j.kind === "ask" && j.status === "running");
-  body.innerHTML = answers.length ? answers.map((a) => `<div class="bubble me"><div class="who">you</div><div class="md">${esc(a.title.replace(/^answer:\s*/, ""))}</div></div><div class="bubble"><div class="who">the graph · ${esc(String(a.created_at).slice(11, 16))}</div><div class="md">${md(a.body)}</div></div>`).join("") : `<div class="empty">Ask the graph anything about this investigation. A one-shot analyst reads the graph and answers with cited evidence.</div>`;
-  for (const j of jobsList) attachAsk(j, j.label);
-  body.scrollTop = body.scrollHeight;
+/* ---------- chat: the conversation with the investigator ---------- */
+let chatTimer = null, lastMsgAt = null, rendered = new Set();
+async function loadChat() {
+  if (!INV) return;
+  const body = $("#chat-body");
+  const msgs = await api("/api/messages/" + INV + (lastMsgAt ? "?after=" + encodeURIComponent(lastMsgAt) : ""));
+  if (!msgs.length && !rendered.size) { body.innerHTML = `<div class="empty">The investigator will introduce itself here. Say what you want, ask anything, point it at a lead.</div>`; }
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 120;
+  let changed = false;
+  for (const m of msgs) {
+    if (rendered.has(m.id)) continue; rendered.add(m.id); changed = true;
+    if (body.querySelector(".empty")) body.innerHTML = "";
+    if (m.role === "activity") {
+      let feed = body.lastElementChild && body.lastElementChild.classList.contains("feed") ? body.lastElementChild : null;
+      if (!feed) { feed = document.createElement("details"); feed.className = "feed"; feed.innerHTML = `<summary><span class="spin"></span><span class="last"></span><span class="n"></span></summary><div class="lines"></div>`; body.appendChild(feed); }
+      const lines = feed.querySelector(".lines"); const d = document.createElement("div"); d.textContent = m.body; lines.appendChild(d);
+      feed.querySelector(".last").textContent = m.body; feed.querySelector(".n").textContent = ` · ${lines.children.length}`;
+      if (/^Turn done|^Waiting for you|^Finished/.test(m.body)) { feed.querySelector(".spin").remove(); feed.querySelector(".last").textContent = m.body; }
+    } else if (m.role === "user") body.insertAdjacentHTML("beforeend", `<div class="bubble me"><div class="who">you · ${esc(ago(m.created_at))}</div><div class="md">${esc(m.body)}</div></div>`);
+    else if (m.role === "agent") body.insertAdjacentHTML("beforeend", `<div class="bubble"><div class="who">investigator · ${esc(ago(m.created_at))}</div><div class="md">${md(m.body)}</div></div>`);
+    else body.insertAdjacentHTML("beforeend", `<div class="sysnote">${esc(m.body)}</div>`);
+    lastMsgAt = m.created_at;
+  }
+  if (changed && (atBottom || msgs.length > 5)) body.scrollTop = body.scrollHeight;
+  if (changed) { const feed = body.querySelector(".feed:last-of-type"); if (feed && liveNow) feed.open = false; }
 }
-function attachAsk(job, q) {
-  const body = $("#ask-body"); if (body.querySelector(".empty")) body.innerHTML = "";
-  if (!body.querySelector(`[data-job="${job.id}"]`)) body.insertAdjacentHTML("beforeend", `<div class="bubble me"><div class="who">you</div><div class="md">${esc(q)}</div></div><div class="bubble" data-job="${job.id}"><div class="who">the graph <span class="spin"></span></div><div class="log"></div><div class="md" hidden></div></div>`);
-  const b = body.querySelector(`[data-job="${job.id}"]`), log = b.querySelector(".log"), out = b.querySelector(".md");
-  let answering = false, answer = "";
-  watchJob(job.id, (lines, live) => { const show = []; for (const line of lines) { if (/^══ answer/.test(line)) { answering = true; continue; } if (answering) answer += line + "\n"; else if (/^\s*[▸·]/.test(line)) show.push(line); } if (show.length) appendLog(log, show, live); body.scrollTop = body.scrollHeight; },
-    () => { b.querySelector(".who").textContent = "the graph"; log.hidden = true; out.hidden = false; out.innerHTML = md(answer.trim() || "(no answer — see the run log)"); body.scrollTop = body.scrollHeight; });
-  body.scrollTop = body.scrollHeight;
-}
-$("#ask-go").onclick = async () => {
-  const q = $("#ask-q").value.trim(); if (!q || !INV) return; $("#ask-q").value = "";
-  const job = await post("/api/ask/" + INV, { q });
-  attachAsk(job, q);
+$("#chat-go").onclick = async () => {
+  const q = $("#chat-q").value.trim(); if (!q || !INV) return;
+  try { await post("/api/chat/" + INV, { message: q }); $("#chat-q").value = ""; refreshLive(); setTimeout(loadChat, 800); } catch (e) { alert(e.message.replace(/^\{.*"error":"(.*)"\}$/, "$1")); }
 };
-$("#ask-q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#ask-go").click(); } });
-
-/* ---------- report ---------- */
-async function loadReport() {
-  const notes = await api("/api/notes/" + INV);
-  const reports = notes.filter((n) => n.kind === "report"), others = notes.filter((n) => n.kind !== "report" && !/^answer:/.test(n.title || "")).slice(0, 12);
-  const el = $("#report-body");
-  if (!reports.length && !others.length) { el.innerHTML = `<div class="empty">No report yet. Run the investigator.</div>`; return; }
-  el.innerHTML = reports.map((r) => `<div class="bubble" style="margin-bottom:12px"><div class="who">report · ${esc(r.title || "")} · ${esc(String(r.created_at).slice(0, 16).replace("T", " "))}</div><div class="md">${md(r.body)}</div></div>`).join("") +
-    (others.length ? `<div class="grp">notebook</div>` + others.map((n) => `<div class="rowi"><div class="h"><span class="p">${esc(n.kind)}${n.title ? " · " + esc(n.title) : ""}</span></div><div class="md" style="font-size:13px">${esc(n.body.slice(0, 600))}</div></div>`).join("") : "");
-}
-
-/* ---------- run ---------- */
-let runJob = null;
-async function loadRun() {
-  const js = (await api("/api/jobs?inv=" + INV)).filter((j) => j.kind === "agent");
-  const j = js[0] || null;
-  const st = $("#run-status"), log = $("#run-log");
-  if (!j) { st.innerHTML = `<span class="pill">no run yet</span>`; $("#run-go").disabled = false; $("#run-stop").hidden = true; return; }
-  st.innerHTML = `<span class="pill ${j.status === "running" ? "live" : ""}">${j.status}</span> <span>started ${ago(j.startedAt)} ago${j.endedAt ? ", ran " + Math.round((j.endedAt - j.startedAt) / 60000) + " min" : ""}</span>`;
-  $("#run-go").disabled = j.status === "running"; $("#run-stop").hidden = j.status !== "running";
-  if (runJob !== j.id) { runJob = j.id; log.textContent = ""; watchJob(j.id, (lines, live) => appendLog(log, lines, live), async () => { await loadGraph(); loadRun(); loadReport(); }); }
-}
-$("#run-go").onclick = async () => { if (!INV) return; try { await post("/api/agent/" + INV, { ceiling: $("#run-ceiling").value, model: $("#run-model").value }); loadRun(); refreshLive(); } catch (e) { alert(e.message); } };
-$("#run-stop").onclick = async () => { if (!runJob) return; if (!confirm("Stop the investigator? Its work so far stays in the graph.")) return; await post(`/api/job/${runJob}/stop`); loadRun(); };
+$("#chat-q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#chat-go").click(); } });
+$("#chat-clear").onclick = async () => { if (!INV) return; if (!confirm("Start a fresh context? The graph and notebook stay; the investigator forgets this conversation.")) return; await post("/api/chat/" + INV, { message: "Fresh start. Read the graph and the notebook, tell me where things stand in one message, then continue.", fresh: true }); refreshLive(); setTimeout(loadChat, 800); };
+$("#chat-stop").onclick = async () => { if (!INV) return; const js = (await api("/api/jobs?inv=" + INV)).filter((j) => j.status === "running"); for (const j of js) await post(`/api/job/${j.id}/stop`); refreshLive(); };
 
 route();
 </script>

@@ -25,7 +25,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, out: { type: "string" }, ceiling: { type: "string" }, steps: { type: "string" }, models: { type: "string" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, out: { type: "string" }, ceiling: { type: "string" }, steps: { type: "string" }, models: { type: "string" }, fresh: { type: "boolean" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -54,6 +54,7 @@ async function main() {
     case "agent": return agentCmd(sub ?? s("inv"));
     case "eval": return evalCmd();
     case "ask": return askCmd(sub ?? s("inv"), rest.filter((x) => !x.startsWith("-")).join(" "));
+    case "chat": return chatCmd(sub ?? s("inv"), rest.filter((x) => !x.startsWith("-")).join(" "));
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
     case "claims": return claims(sub ?? s("inv"));
@@ -322,6 +323,38 @@ async function evalCmd() {
   const out = s("out") ?? `eval-${seed.replace(/[^a-z0-9.-]+/gi, "_")}.md`;
   writeFileSync(out, `# Model eval — ${seed} (${kind})\n\nGoal: ${goal}\n\nCeiling $${s("ceiling") ?? "1.5"} per run · extractor ${extractor.label} · ${new Date().toISOString().slice(0, 10)}\n\n| model | inv | entities | links | corroborated | sources | $ | steps | tool calls | min | ended |\n|---|---|---|---|---|---|---|---|---|---|---|\n${rows.map((r) => `| ${r.model} | ${r.inv} | ${r.entities} | ${r.links} | ${r.corroborated} | ${r.sources} | ${r.usd.toFixed(2)} | ${r.steps} | ${r.tools} | ${r.min} | ${r.stopped ?? "finished"} |`).join("\n")}\n\n${rows.map((r) => `## ${r.model} (${r.inv})\n\n${r.report}\n`).join("\n")}`, "utf8");
   console.log(`\nwrote ${out}`);
+}
+
+// `wg chat <inv> "message" [--fresh] [--agent-model sonnet-5] [--ceiling usd]` — one turn of the conversation with the
+// investigator: the session (LLM transcript) continues across turns; --fresh starts a new one. The agent's
+// send_message calls are stored as messages and printed as "@ …"; the activity feed as "» …".
+async function chatCmd(id?: string, message?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail('wg chat <inv> "message" [--fresh] [--agent-model sonnet-5] [--ceiling usd]');
+  const agentModel = getModel(s("agent-model") ?? "sonnet-5");
+  if (!hasKeyFor(agentModel)) return fail(`no API key for ${agentModel.label}`);
+  const extractor = getModel(s("model") ?? DEFAULT_MODEL);
+  const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model: extractor, policy: getPolicy(inv.policy ?? "unrestricted"), registry: registry(), log: () => {} };
+  let session = (await query<{ id: string; transcript: unknown[]; turns: number; usd: number }>(`SELECT id, transcript, turns, usd FROM sessions WHERE investigation_id=$1 AND cleared_at IS NULL ORDER BY created_at DESC LIMIT 1`, [inv.id]))[0] ?? null;
+  if (session && b("fresh")) { await query(`UPDATE sessions SET cleared_at=now() WHERE id=$1`, [session.id]); await query(`INSERT INTO messages (id, investigation_id, session_id, role, body) VALUES ($1,$2,$3,'system','History cleared — the investigator starts with a fresh context (the graph and notebook remain).')`, [uuidv7(), inv.id, session.id]); session = null; }
+  const first = !session;
+  if (!session) { const sid = uuidv7(); await query(`INSERT INTO sessions (id, investigation_id, model) VALUES ($1,$2,$3)`, [sid, inv.id, agentModel.id]); session = { id: sid, transcript: [], turns: 0, usd: 0 }; }
+  const text = (message ?? "").trim() || (first ? `Start the investigation. Goal: ${inv.goal_text}` : "Continue.");
+  await query(`INSERT INTO messages (id, investigation_id, session_id, role, body) VALUES ($1,$2,$3,'user',$4)`, [uuidv7(), inv.id, session.id, text]);
+  const sid = session.id;
+  const say = async (t: string) => { await query(`INSERT INTO messages (id, investigation_id, session_id, role, body) VALUES ($1,$2,$3,'agent',$4)`, [uuidv7(), inv.id, sid, t]); console.log(`@ ${t.replace(/\n/g, "\n@ ")}`); };
+  const activity = (t: string) => { console.log(`» ${t}`); void query(`INSERT INTO messages (id, investigation_id, session_id, role, body) VALUES ($1,$2,$3,'activity',$4)`, [uuidv7(), inv.id, sid, t]).catch(() => {}); };
+  const traceFile = process.env.WG_TRACE || null;
+  const t0 = Date.now();
+  const r = await runInvestigator(inv, {
+    ctx, model: agentModel, ceilingUsd: s("ceiling") ? Number(s("ceiling")) : undefined, maxSteps: s("steps") ? Number(s("steps")) : 400,
+    chat: { transcript: session.transcript as { role: "user" | "assistant"; content: unknown }[], user: first ? `${text}\n\n(This is the first turn: frame the case, inventory the graph, tell me your plan in one message, then work it.)` : text, say, activity },
+    log: (m) => { if (traceFile) appendFileSync(traceFile, m + "\n"); }, trace: (t) => { if (traceFile) appendFileSync(traceFile, t + "\n"); },
+    rebuild: async () => { const st = await rebuild(inv.id, { currentPromptVersion: promptVersion(registry()) }); return `rebuilt: ${st.claims} claims → ${st.entities} entities · ${st.links} links · ${st.attributes} attributes · ${st.hypotheses} open identity hypotheses`; },
+    judge: async () => { await judge(inv.id); const st = await investigationStats(inv.id); return `judged; graph now ${st.relations} relations · ${st.attributes} attributes`; },
+  });
+  await query(`UPDATE sessions SET transcript=$2, turns=turns+1, usd=usd+$3, updated_at=now() WHERE id=$1`, [sid, JSON.stringify(r.messages), r.usd]);
+  activity(`Turn done · ${r.toolCalls} tool calls · $${r.usd.toFixed(2)} · ${Math.round((Date.now() - t0) / 60000)} min${r.stopped ? " · " + r.stopped : ""}`);
 }
 
 // `wg ask <inv> "question"` — ask the graph: a one-shot run of the investigator's read tools that answers from the

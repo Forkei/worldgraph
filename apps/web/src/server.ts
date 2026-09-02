@@ -21,7 +21,7 @@ const readBody = (req: IncomingMessage) => new Promise<Record<string, unknown>>(
 // ---------------------------------------------------------------------------------------------------------------
 // jobs
 // ---------------------------------------------------------------------------------------------------------------
-interface Job { id: string; inv: string | null; kind: "agent" | "ask" | "create" | "search"; label: string; args: string[]; status: "running" | "done" | "failed" | "stopped"; lines: string[]; startedAt: number; endedAt: number | null; code: number | null; child: ChildProcess | null; listeners: Set<(line: string | null) => void> }
+interface Job { id: string; inv: string | null; kind: "agent" | "ask" | "create" | "search" | "chat"; label: string; args: string[]; status: "running" | "done" | "failed" | "stopped"; lines: string[]; startedAt: number; endedAt: number | null; code: number | null; child: ChildProcess | null; listeners: Set<(line: string | null) => void> }
 const jobs = new Map<string, Job>();
 const MAX_LINES = 6000;
 
@@ -65,7 +65,8 @@ async function graphOf(inv: string) {
   const attrs = await query(`SELECT a.id, a.entity_id e, a.key, a.key_specific ks, a.value, a.grade, a.reliability rel, a.credibility cred, a.independent_origins origins, a.contested FROM attributes a WHERE a.investigation_id=$1`, [inv]);
   const [src] = await query<{ n: string }>(`SELECT count(*) n FROM sources WHERE investigation_id=$1 AND status='extracted'`, [inv]);
   const q = await query<{ subject_entity_id: string | null }>(`SELECT subject_entity_id FROM questions WHERE investigation_id=$1 AND status='open' ORDER BY created_at DESC LIMIT 1`, [inv]);
-  return { entities, links, attrs, sources: Number(src?.n ?? 0), subject: q[0]?.subject_entity_id ?? null };
+  const groups = await query(`SELECT id, label, members, note FROM entity_groups WHERE investigation_id=$1 ORDER BY created_at`, [inv]);
+  return { entities, links, attrs, groups, sources: Number(src?.n ?? 0), subject: q[0]?.subject_entity_id ?? null };
 }
 
 const server = createServer(async (req, res) => {
@@ -114,6 +115,16 @@ const server = createServer(async (req, res) => {
       const b = await readBody(req); const a = ["agent", agent[1]!]; if (b.ceiling) a.push("--ceiling", String(b.ceiling)); if (b.model) a.push("--agent-model", String(b.model));
       if ([...jobs.values()].some((j) => j.inv === agent[1] && j.kind === "agent" && j.status === "running")) return json(res, { error: "an investigator is already running on this case" }, 409);
       return json(res, jobView(startJob("agent", agent[1]!, "investigator", a)));
+    }
+    // the conversation: messages (user / agent / activity / system) and chat turns as jobs
+    const msgs = p.match(/^\/api\/messages\/([0-9a-f-]+)$/);
+    if (msgs) { const after = url.searchParams.get("after"); return json(res, await query(`SELECT id, role, body, meta, created_at FROM messages WHERE investigation_id=$1 ${after ? "AND created_at > $2::timestamptz" : ""} ORDER BY created_at ASC LIMIT 500`, after ? [msgs[1]!, after] : [msgs[1]!])); }
+    const chat = p.match(/^\/api\/chat\/([0-9a-f-]+)$/);
+    if (chat && req.method === "POST") {
+      const b = await readBody(req);
+      if ([...jobs.values()].some((j) => j.inv === chat[1] && j.kind === "chat" && j.status === "running")) return json(res, { error: "the investigator is still working on the previous message" }, 409);
+      const a = ["chat", chat[1]!, String(b.message ?? "")]; if (b.fresh) a.push("--fresh"); if (b.ceiling) a.push("--ceiling", String(b.ceiling)); if (b.model) a.push("--agent-model", String(b.model));
+      return json(res, jobView(startJob("chat", chat[1]!, String(b.message ?? "").slice(0, 120) || "turn", a)));
     }
     const ask = p.match(/^\/api\/ask\/([0-9a-f-]+)$/);
     if (ask && req.method === "POST") { const b = await readBody(req); return json(res, jobView(startJob("ask", ask[1]!, String(b.q ?? "").slice(0, 120), ["ask", ask[1]!, String(b.q ?? "")]))); }

@@ -157,7 +157,7 @@ export async function withRetry<T>(label: string, fn: () => Promise<T>, attempts
 }
 
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown> }
-export interface ToolLoopResult { finalText: string; usd: number; steps: number; toolCalls: number; transcript: { role: string; text: string }[] }
+export interface ToolLoopResult { finalText: string; usd: number; steps: number; toolCalls: number; transcript: { role: string; text: string }[]; /** the full message array after this run — persist it to resume the session */ messages: { role: "user" | "assistant"; content: unknown }[] }
 
 /**
  * Run an Anthropic tool-use loop: the model thinks, calls tools (executed by `exec`), sees results, repeats,
@@ -165,13 +165,14 @@ export interface ToolLoopResult { finalText: string; usd: number; steps: number;
  */
 export async function runToolLoop(
   m: ModelSpec,
-  opts: { system: string; user: string; tools: ToolDef[]; exec: (name: string, input: Record<string, unknown>) => Promise<string>; maxSteps?: number; onStep?: (note: string) => void; onTool?: (name: string, input: Record<string, unknown>, output: string, usd: number) => void; /** stop the loop from outside (e.g. a cost ceiling) — return a reason */ shouldStop?: () => string | null; maxToolChars?: number; keepRecent?: number },
+  opts: { system: string; user: string; tools: ToolDef[]; exec: (name: string, input: Record<string, unknown>) => Promise<string>; maxSteps?: number; onStep?: (note: string) => void; onTool?: (name: string, input: Record<string, unknown>, output: string, usd: number) => void; /** stop the loop from outside (e.g. a cost ceiling) — return a reason */ shouldStop?: () => string | null; maxToolChars?: number; keepRecent?: number; /** resume a session: prior transcript (assistant/user turns incl. tool blocks) */ initialMessages?: { role: "user" | "assistant"; content: unknown }[] },
 ): Promise<ToolLoopResult> {
   if (m.provider !== "anthropic") throw new Error("runToolLoop currently supports Anthropic models only");
   anthropicClient ??= new Anthropic({ apiKey: requireEnv("anthropicKey") });
   const maxSteps = opts.maxSteps ?? 24;
   let trimmedUpTo = 0;
-  const messages: { role: "user" | "assistant"; content: unknown }[] = [{ role: "user", content: opts.user }];
+  // resume: a chat session carries its transcript across turns; the new user message is appended to it
+  const messages: { role: "user" | "assistant"; content: unknown }[] = opts.initialMessages?.length ? [...opts.initialMessages, { role: "user", content: opts.user }] : [{ role: "user", content: opts.user }];
   const transcript: { role: string; text: string }[] = [];
   let usd = 0, toolCalls = 0, step = 0;
   // cache the static prefix (system + tools) and roll a cache breakpoint onto the last message each turn, so a
@@ -197,7 +198,7 @@ export async function runToolLoop(
     const say = res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
     if (say) { transcript.push({ role: "assistant", text: say }); opts.onStep?.(say); }
     messages.push({ role: "assistant", content: res.content });
-    if (res.stop_reason !== "tool_use") return { finalText: say, usd, steps: step + 1, toolCalls, transcript };
+    if (res.stop_reason !== "tool_use") return { finalText: say, usd, steps: step + 1, toolCalls, transcript, messages };
     const results: unknown[] = [];
     for (const block of res.content) {
       if (block.type !== "tool_use") continue;
@@ -227,5 +228,5 @@ export async function runToolLoop(
       trimmedUpTo = cutoff;
     }
   }
-  return { finalText: "(stopped: max steps reached)", usd, steps: step, toolCalls, transcript };
+  return { finalText: "(stopped: max steps reached)", usd, steps: step, toolCalls, transcript, messages };
 }

@@ -27,8 +27,11 @@ export interface InvestigatorDeps {
   trace?: (s: string) => void;
   /** "ask the graph": answer this question from the graph alone (read tools only), then finish */
   question?: string;
+  /** chat mode: one turn of an ongoing conversation. The transcript is the LLM session; `say` delivers a message to
+   *  the user immediately (send_message tool); `activity` receives readable one-liners of what the agent is doing. */
+  chat?: { transcript: { role: "user" | "assistant"; content: unknown }[]; user: string; say: (text: string) => Promise<void>; activity?: (text: string) => void };
 }
-export interface InvestigatorResult { report: string; usd: number; steps: number; toolCalls: number; stopped: string | null }
+export interface InvestigatorResult { report: string; usd: number; steps: number; toolCalls: number; stopped: string | null; messages: { role: "user" | "assistant"; content: unknown }[] }
 
 type Claim = RelationClaim | AttributeClaim;
 const short = (id: string) => id.slice(0, 8);
@@ -133,7 +136,12 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
     { name: "rebuild", description: "Rebuild the graph from all claims (resolution, grading, slots). Do it after a batch of contributions.", input_schema: { type: "object", properties: {} } },
     { name: "judge", description: "Have the identity judge decide the open same-entity hypotheses (cheap LLM verdicts, recorded and reversible), then rebuild.", input_schema: { type: "object", properties: {} } },
     { name: "cost", description: "Money and steps spent so far, and the ceiling if any.", input_schema: { type: "object", properties: {} } },
-    { name: "finish", description: "End the investigation with the final report (see consult_playbook('investigator/report')). Only when the stopping bar is met or the run is ending.", input_schema: { type: "object", properties: { report: { type: "string" }, verdict: { type: "string", enum: ["answered", "partial", "unanswerable"] } }, required: ["report", "verdict"] } },
+    { name: "send_message", description: "Say something to the person you are working for: a finding as soon as it is solid, a question, a plan, a caveat. Short, plain, specific; cite ids in square brackets at the end of a sentence (e.g. [link:845710f1]) so they can tap the evidence. Send as many as the work deserves — the conversation is the report.", input_schema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+    { name: "ask_graph", description: "Ask the graph analyst a question about the current graph (a read-only one-shot run over the graph alone). Use it to check what the graph already establishes before collecting more, or to get a synthesis you would otherwise spend many lookups on.", input_schema: { type: "object", properties: { question: { type: "string" } }, required: ["question"] } },
+    { name: "group_entities", description: "Group entities that are best seen as one thing (a corporate chain — parent, holdings, finance vehicles; a brand and its legal entities; a person's accounts). The graph draws the group as one node that opens on tap. Give a label and the entity refs (names or ids). Grouping is presentation; it never merges records.", input_schema: { type: "object", properties: { label: { type: "string" }, members: { type: "array", items: { type: "string" } }, why: { type: "string" } }, required: ["label", "members"] } },
+    { name: "ungroup", description: "Dissolve a group by id or label.", input_schema: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] } },
+    { name: "groups", description: "List the current groups.", input_schema: { type: "object", properties: {} } },
+    { name: "finish", description: "End your turn. In a conversation: call it when you are waiting on the person or the case is done for now (say what you have with send_message first; report may be empty). In a one-shot run: the final report (see consult_playbook('investigator/report')).", input_schema: { type: "object", properties: { report: { type: "string" }, verdict: { type: "string", enum: ["answered", "partial", "unanswerable"] } }, required: [] } },
   ];
 
   let steps = 0;
@@ -365,7 +373,30 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
       case "rebuild": { const s = await deps.rebuild(); graphCache = null; return s; }
       case "judge": { const s = await deps.judge(); graphCache = null; return s; }
       case "cost": return `spent $${usdTotal().toFixed(3)} · ${steps} tool calls${deps.ceilingUsd ? ` · ceiling $${deps.ceilingUsd}` : " · no ceiling"}`;
-      case "finish": { report = S("report"); await note(deps.question ? "note" : "report", deps.question ? `answer: ${deps.question.slice(0, 80)}` : (S("verdict") || "partial"), report); return "ok"; }
+      case "send_message": { const text = S("text"); if (!text) return "empty"; if (deps.chat) await deps.chat.say(text); else await note("note", "message", text); return "sent"; }
+      case "ask_graph": {
+        const q = S("question"); if (!q) return "question required";
+        const r = await runInvestigator(inv, { ctx, model, question: q, maxSteps: 40, rebuild: async () => "read-only", judge: async () => "read-only", log: () => {} });
+        return r.report || "(no answer)";
+      }
+      case "group_entities": {
+        const g = await graph(true); const label = S("label"); const refs = Array.isArray(input.members) ? (input.members as string[]) : [];
+        const ids = [...new Set(refs.map((r) => findEnt(g, String(r))?.id).filter(Boolean) as string[])];
+        if (!label || ids.length < 2) return "a label and at least two entities that exist in the graph are required";
+        const gid = uuidv7();
+        await query(`INSERT INTO entity_groups (id, investigation_id, label, members, note) VALUES ($1,$2,$3,$4::uuid[],$5)`, [gid, inv.id, label, ids, S("why") || null]);
+        return `grouped ${ids.length} entities as "${label}" (group ${short(gid)})`;
+      }
+      case "ungroup": {
+        const ref = S("ref");
+        const rows = await query<{ id: string }>(`DELETE FROM entity_groups WHERE investigation_id=$1 AND (id::text LIKE $2 OR lower(label)=lower($3)) RETURNING id`, [inv.id, `${ref}%`, ref]);
+        return rows.length ? `dissolved ${rows.length} group${rows.length === 1 ? "" : "s"}` : "no such group";
+      }
+      case "groups": {
+        const g = await graph(); const rows = await query<{ id: string; label: string; members: string[]; note: string | null }>(`SELECT id, label, members, note FROM entity_groups WHERE investigation_id=$1 ORDER BY created_at`, [inv.id]);
+        return rows.length ? rows.map((r) => `${short(r.id)} ${r.label}: ${r.members.map((m) => g.entities.get(m)?.name ?? short(m)).join(" | ")}${r.note ? " — " + r.note : ""}`).join("\n") : "no groups";
+      }
+      case "finish": { report = S("report"); if (deps.chat) { if (report && report.length > 40) await deps.chat.say(report); return "ok — turn ended"; } await note(deps.question ? "note" : "report", deps.question ? `answer: ${deps.question.slice(0, 80)}` : (S("verdict") || "partial"), report); return "ok"; }
       default: return "unknown tool";
     }
   };
@@ -405,15 +436,63 @@ Then call finish with the answer in this shape, and keep it SHORT — it is read
 - Then at most four short bullets of evidence. Each bullet: the fact in plain words, the source name, and a quote of at most ~15 words. Put the graph id at the END of the bullet in square brackets, e.g. [link:845710f1] — never inside a sentence.
 - Then one line starting "Unknown:" with what the graph cannot tell.
 No headings, no bold, no restating the question, no ids in prose. Under 150 words unless the question truly needs more.`;
+  const chatSystem = `You are the lead investigator on an open-source (OSINT) investigation, working WITH the person who opened it, in a conversation that continues across turns. You are in full control of the work: nothing happens unless you do it. You decide what to search, what to read, which connectors to run, what enters the graph, how entities resolve, how they are grouped, and when a line of enquiry is exhausted.
+
+SUBJECT: ${inv.seed.name} (${inv.seed.kind})
+GOAL: ${inv.goal_text}
+
+${inventory}
+
+The rhythm: COLLECT (search deep — pages 2–5, several engines, operators; read the pages; run connectors on every identifier; contribute what is relevant and supported) → when you are satisfied with a round, CONSOLIDATE (rebuild, settle duplicates with graph_duplicates / same_as / not_same_as / split, retract junk, group entities that are one thing for the reader) → ASSESS (what is established, what is thin, what is missing, what is surprising; update the hypothesis board; ask_graph when a synthesis helps) → CONTINUE with the most valuable lead. Repeat until the stopping bar is met (consult_playbook("investigator/stopping")).
+
+Talk to the person as you go with send_message: a solid finding as soon as you have it, the plan when you change it, a question when only they can answer. Short, plain, specific; ids in square brackets at the END of a sentence so they can tap the evidence. Do not narrate tool calls; do not repeat what the activity feed shows. When they send you a message, treat it as a lead or an instruction from the owner of the case and act on it. End your turn with finish when you are waiting on them or the case is done for now — the conversation is the report; there is no separate report.
+
+The graph's rules: every fact needs a source you read and a verbatim quote; a name is never identity — join entities only with same_as + quote or a shared identifier, split what the build fused wrongly; grades come from who published; every edit is recorded and reversible. Reading only: never log in, never use leaked credentials, never touch systems.`;
+
+  /** what a tool call means, in words a person can follow (the activity feed) */
+  const describe = (name: string, input: Record<string, unknown>): string | null => {
+    const v = (k: string) => String(input[k] ?? "").trim();
+    const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u.slice(0, 40); } };
+    switch (name) {
+      case "search": return `Searching ${v("engine") || "google"}${Number(input.page ?? 1) > 1 ? " page " + input.page : ""}: ${v("query")}`;
+      case "read_url": return `Reading ${host(v("url"))}`;
+      case "read_text": return `Reading more of ${host(v("url"))}`;
+      case "contribute": return `Keeping facts from ${host(v("url"))}`;
+      case "run_capability": return `Running ${v("id")} on ${v("value")}`;
+      case "graph_lookup": return `Checking the graph for ${v("ref")}`;
+      case "graph_ego": case "graph_paths": case "graph_timeline": case "graph_contested": case "graph_gaps": case "graph_sql": case "why": case "notebook": case "hypotheses": case "cost": case "list_capabilities": return null;
+      case "consult_playbook": return `Consulting the playbook: ${v("topic") || "index"}`;
+      case "link": return `Recording: ${v("subject")} ${v("predicate").replace(/_/g, " ")} ${v("object")}`;
+      case "attribute": return `Recording: ${v("entity")} ${v("key")} = ${v("value")}`;
+      case "same_as": return `Joining ${v("name_a")} and ${v("name_b")}`;
+      case "not_same_as": return `Keeping ${v("a")} and ${v("b")} apart`;
+      case "split": return `Splitting ${v("ref")}`;
+      case "retract": return `Retracting ${v("source")}`;
+      case "hypothesis": return v("statement") ? `Hypothesis: ${v("statement").slice(0, 120)}` : `Updating a hypothesis → ${v("status")}`;
+      case "note": return v("kind") === "plan" ? `Plan: ${v("body").slice(0, 140)}` : null;
+      case "rebuild": return "Rebuilding the graph";
+      case "judge": return "Judging identity pairs";
+      case "graph_duplicates": return "Checking for duplicates";
+      case "group_entities": return `Grouping as "${v("label")}"`;
+      case "ungroup": return `Ungrouping ${v("ref")}`;
+      case "ask_graph": return `Asking the graph: ${v("question").slice(0, 120)}`;
+      case "send_message": return null;
+      case "finish": return deps.chat ? "Waiting for you" : "Finished";
+      default: return null;
+    }
+  };
+
   const r = await runToolLoop(model, {
-    system: deps.question ? askSystem : system, user: deps.question ? `Answer the question.` : `Begin. Frame the question, inventory the graph, write the plan, then work it.`,
+    system: deps.question ? askSystem : deps.chat ? chatSystem : system,
+    user: deps.question ? `Answer the question.` : deps.chat ? deps.chat.user : `Begin. Frame the question, inventory the graph, write the plan, then work it.`,
+    initialMessages: deps.chat?.transcript,
     tools: deps.question ? tools.filter((t) => READ_ONLY.has(t.name)) : tools, exec,
     maxSteps: deps.maxSteps ?? 600, keepRecent: 18, maxToolChars: 14_000,
     onStep: (t) => { log("   · " + t.replace(/\s+/g, " ").slice(0, 200)); trace("\n### " + t); },
-    onTool: (name, input, out, u) => { log(`   ▸ ${name}(${JSON.stringify(input).slice(0, 120)}) → ${out.split("\n")[0]!.slice(0, 120)}`); trace(`\n>>> ${name} ${JSON.stringify(input)}\n<<< ${out.slice(0, 2000)}`); modelUsd = u; },
+    onTool: (name, input, out, u) => { log(`   ▸ ${name}(${JSON.stringify(input).slice(0, 120)}) → ${out.split("\n")[0]!.slice(0, 120)}`); const d = describe(name, input); if (d) deps.chat?.activity?.(d); trace(`\n>>> ${name} ${JSON.stringify(input)}\n<<< ${out.slice(0, 2000)}`); modelUsd = u; },
     shouldStop: () => { if (deps.ceilingUsd && usdTotal() >= deps.ceilingUsd) { stopped = `cost ceiling $${deps.ceilingUsd} reached`; return stopped; } return null; },
   });
   modelUsd = r.usd;
   if (!report) report = r.finalText;
-  return { report, usd: usdTotal(), steps: r.steps, toolCalls: r.toolCalls, stopped };
+  return { report, usd: usdTotal(), steps: r.steps, toolCalls: r.toolCalls, stopped, messages: r.messages };
 }
