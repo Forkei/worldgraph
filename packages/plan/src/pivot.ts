@@ -113,7 +113,7 @@ export async function runPivots(inv: string, seeds: PivotSeed[], opts: PivotOpts
         try {
           const ck = cacheKeyFor(runner.id, seed.kind, seed.value);
           let result: CapabilityResult | null = null;
-          const cached = await getCachedSearch(ck);
+          const cached = opts.refetch ? null : await getCachedSearch(ck);   // --refetch bypasses the cache too, not just the run log
           if (cached) { result = cached.result as CapabilityResult; run.status = "cached"; }
           else {
             result = await runner.run([seed.value], seed.kind);
