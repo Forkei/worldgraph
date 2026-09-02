@@ -18,7 +18,9 @@ export async function exportHtml(inv: InvestigationRow, out: string, subjectId: 
 
   // evidence: one pass over the justifications of every link/attribute → the claims that support them → their quotes + sources
   const just = await query<{ derived_kind: string; derived_id: string; supports: { kind: string; id: string }[] }>(
-    `SELECT derived_kind, derived_id, supports FROM justifications WHERE investigation_id=$1 AND derived_kind IN ('link','attribute')`, [inv.id]);
+    `SELECT j.derived_kind, j.derived_id, j.supports FROM justifications j
+       WHERE j.status='in' AND ((j.derived_kind='link' AND j.derived_id IN (SELECT id FROM links WHERE investigation_id=$1))
+                             OR (j.derived_kind='attribute' AND j.derived_id IN (SELECT id FROM attributes WHERE investigation_id=$1)))`, [inv.id]);
   const claimIds = new Set<string>();
   for (const j of just) for (const s of j.supports ?? []) if (s.kind === "claim") claimIds.add(s.id);
   const ids = [...claimIds];
