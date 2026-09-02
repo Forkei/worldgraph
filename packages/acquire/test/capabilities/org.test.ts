@@ -36,6 +36,7 @@ describe("D1 edgar", () => {
     expect(filed.map((e) => e.qualifiers?.form)).toEqual(["10-Q", "8-K"]);
     expect(filed[0]!.qualifiers?.url).toBe("https://www.sec.gov/Archives/edgar/data/1321655/000132165526000010/pltr-20260630.htm");
     expect(r.attributes.find((a) => a.key === "filings:4")?.value).toBe("2 (2026-07-30 → 2026-08-01)");
+    expect(r.attributes.find((a) => a.key === "sec_filings_total")?.value).toBe("4 (2026-07-30 → 2026-08-04)");
     expect(r.attributes.find((a) => a.key === "first_sec_filing")?.value).toBe("2026-07-30");
   });
   it("records former names as dated edges", () => {

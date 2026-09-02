@@ -8,10 +8,9 @@ import {
   findSourceByUrl, findSourceByHash, insertSource, insertClaimsBatch, deleteInvestigation, updateSourceStatus, getSource, listSources, investigationStats, audit, getTierRows, setTier, setSourcePublisher, syncCapabilities, listCapabilities, getCachedSearch, putCachedSearch,
   type SourceRow,
 } from "@worldgraph/db";
-import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
-import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, webPrimitives, gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives, exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox, edgar, gleif, wikidata, nonprofit, usaspending, courtCases, companiesHouse, openCorporates, sanctions, type CapabilityResult } from "@worldgraph/acquire";
+import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, CAP_RUNNERS, type SearchResult, type PivotKind } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, type Side } from "@worldgraph/extract";
-import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers } from "@worldgraph/plan";
+import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers, runPivots, harvestPivots, seedPivots, type PivotSeed } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -25,7 +24,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -50,6 +49,7 @@ async function main() {
     case "run": return runLoop(sub ?? s("inv"));
     case "capabilities": case "caps": return capabilitiesCmd();
     case "cap": return capCmd(sub, rest);
+    case "pivot": return pivotCmd(sub ?? s("inv"), ...rest);
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
     case "claims": return claims(sub ?? s("inv"));
@@ -237,46 +237,13 @@ async function capabilitiesCmd() {
 }
 
 // Run a single capability by id against an input value, and print the typed result (research/17). Live, no
-// cache — this is the "try a tool" command; the pivot engine (next phase) is what does cache-first + chaining.
-type CapRunner = (args: string[]) => Promise<CapabilityResult>;
-const CAP_RUNNERS: Record<string, CapRunner> = {
-  "infra.rdap": (a) => rdap(a[0]!),
-  "infra.dns": (a) => dns(a[0]!),
-  "infra.cert_transparency": (a) => certTransparency(a[0]!),
-  "infra.wayback": (a) => wayback(a[0]!),
-  "infra.urlscan": (a) => urlscanSearch(a[0]!),
-  "infra.reverse_ip": (a) => reverseIp(a[0]!),
-  "infra.asn": (a) => asn(a[0]!),
-  "infra.web_primitives": (a) => webPrimitives(a[0]!),
-  "people.gravatar": (a) => gravatar(a[0]!),
-  "people.fec": (a) => fecDonations(a.join(" ")),
-  "people.academic": (a) => academic(a.join(" ")),
-  "people.username": (a) => usernameAccounts(a[0]!),
-  "people.breach": (a) => (a[0] ? hibpAccount(a[0]) : hibpCatalog()),
-  "people.email_pattern": (a) => hunter(a[0]!),
-  "people.relatives": (a) => relatives(a.join(" ")),
-  "media.exif": (a) => exif(a[0]!),
-  "media.reverse_image": (a) => reverseImage(a[0]!),
-  "geo.geocode": (a) => geocode(a.join(" ")),
-  "geo.map": (a) => nearbyPOIs(Number(a[0]), Number(a[1]), a[2] ? Number(a[2]) : undefined, a[3]),
-  "geo.chronolocation": (a) => chronoCheck(Number(a[0]), Number(a[1]), a[2]!),
-  "geo.aircraft": (a) => aircraftInBox(Number(a[0]), Number(a[1]), Number(a[2]), Number(a[3])),
-  "org.edgar": (a) => edgar(a.join(" ")),
-  "org.gleif": (a) => gleif(a.join(" ")),
-  "org.wikidata": (a) => wikidata(a.join(" ")),
-  "org.nonprofit": (a) => nonprofit(a.join(" ")),
-  "org.usaspending": (a) => usaspending(a.join(" ")),
-  "org.court": (a) => courtCases(a.join(" ")),
-  "org.companies_house": (a) => companiesHouse(a.join(" ")),
-  "org.opencorporates": (a) => openCorporates(a.join(" "), s("mode") === "officer" ? "officer" : "company"),
-  "org.sanctions": (a) => sanctions(a.join(" ")),
-};
-
+// cache — this is the "try a tool" command; `wg pivot` is the cache-first chaining engine that writes to the graph.
 async function capCmd(id?: string, args: string[] = []) {
-  if (!id || !CAP_RUNNERS[id]) return fail(`wg cap <id> <input…>\n  ids: ${Object.keys(CAP_RUNNERS).join(", ")}`);
+  const runner = CAP_RUNNERS.find((r) => r.id === id);
+  if (!id || !runner) return fail(`wg cap <id> <input…>\n  ids: ${CAP_RUNNERS.map((r) => r.id).join(", ")}`);
   const input = args.filter((x) => !x.startsWith("-"));
   if (!input.length) return fail(`wg cap ${id} <input>   e.g.  wg cap infra.cert_transparency openai.com`);
-  const r = await CAP_RUNNERS[id]!(input);
+  const r = await runner.run(input, s("mode") === "officer" ? "name" : undefined);
   if (b("json")) { console.log(JSON.stringify(r, null, 2)); return; }
   const p = r.provenance;
   console.log(`\n${id}  "${input.join(" ")}"  →  ${p.source} · grade ${p.grade} · ${p.tier}${p.gated ? " · GATED" : ""}`);
@@ -286,6 +253,37 @@ async function capCmd(id?: string, args: string[] = []) {
   for (const e of r.edges.slice(0, 10)) console.log(`  → ${e.subject}  —${e.predicate}→  ${e.object}${e.at ? `  (${e.at})` : ""}${e.value ? `  =${e.value}` : ""}`);
   for (const a of r.attributes.slice(0, 8)) console.log(`  · ${a.entity}: ${a.key} = ${a.value}`);
   if (r.pivots.length) console.log(`\n  pivots: ${r.pivots.slice(0, 15).map((pv) => `${pv.kind}:${pv.value}${pv.weak ? "~" : ""}`).join("  ")}`);
+}
+
+// The pivot engine (HANDOFF B1): chain capabilities from typed seeds, write results into the graph, rebuild.
+//   wg pivot <inv> [kind:value …] [--depth N] [--max N] [--only a,b] [--skip a,b] [--weak] [--refetch] [--dry] [--no-rebuild]
+// With no explicit seeds it harvests them from the investigation seed + the graph (accounts, subject, its orgs).
+async function pivotCmd(id?: string, ...rest: string[]) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg pivot <inv> [kind:value …] [--depth N] [--max 40] [--only ids] [--skip ids] [--weak] [--refetch] [--dry]");
+  const explicit: PivotSeed[] = [];
+  for (const tok of rest) {
+    if (tok.startsWith("-")) continue;
+    const m = /^([a-z]+):(.+)$/.exec(tok);
+    if (m) explicit.push({ kind: m[1] as PivotKind, value: m[2]!, depth: 0, from: "cli" });
+  }
+  const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model: getModel(DEFAULT_MODEL), policy: getPolicy(inv.policy ?? "unrestricted"), registry: registry(), log: () => {} };
+  let seeds = explicit;
+  if (!seeds.length) {
+    const g = await loadGraph(inv.id);
+    const q = (await openQuestions(inv.id))[0];
+    seeds = [...seedPivots(inv.seed), ...harvestPivots(g, q?.subject_entity_id ?? subjectOf(g, { subject_entity_id: null }, inv.seed.name)?.id ?? null)];
+  }
+  if (!seeds.length) return fail("nothing to pivot from");
+  console.log(`pivoting from ${seeds.length} seed${seeds.length === 1 ? "" : "s"}: ${seeds.slice(0, 8).map((x) => `${x.kind}:${x.value}`).join("  ")}${seeds.length > 8 ? " …" : ""}\n`);
+  const depthOpt = s("depth") ? Number(s("depth")) : undefined;
+  const KINDS: PivotKind[] = ["domain", "hostname", "ip", "asn", "email", "username", "phone", "name", "org", "url", "image", "coordinates"];
+  const maxDepth = depthOpt != null ? Object.fromEntries(KINDS.map((k) => [k, depthOpt])) : undefined;
+  const sum = await runPivots(inv.id, seeds, { ctx, maxDepth, maxRuns: Number(s("max") ?? 40), only: s("only")?.split(","), skip: s("skip")?.split(","), includeWeak: b("weak"), refetch: b("refetch"), dry: b("dry"), log: (m) => console.log(m) });
+  const by = (st: string) => sum.runs.filter((r) => r.status === st).length;
+  console.log(`\n── pivot done ── ${sum.runs.length} runs (${by("ok")} live · ${by("cached")} cached · ${by("empty")} empty · ${by("duplicate")} duplicate · ${by("skipped")} skipped · ${by("error")} error) · ${sum.sources} new sources · ${sum.claims} claims · ${sum.discovered.length} pivots discovered${sum.stopped ? `\nstopped: ${sum.stopped}` : ""}`);
+  const errs = sum.runs.filter((r) => r.status === "error"); for (const e of errs.slice(0, 5)) console.log(`  ! ${e.capability} ${e.kind}:${e.value} — ${e.note}`);
+  if (sum.claims && !b("dry") && !b("no-rebuild")) { console.log("\n  rebuilding …"); await rebuildCmd(inv.id); }
 }
 
 async function search(id?: string, ...queryParts: string[]) {
@@ -517,6 +515,18 @@ async function runLoop(id?: string) {
       } catch (e) { console.log(`bootstrap failed: ${String((e as Error).message).slice(0, 90)}`); }
     }
   }
+  // the capability arsenal runs alongside the web missions: seeds + whatever the graph now holds (accounts, orgs)
+  const pivotPass = async (label: string) => {
+    if (b("no-pivot")) return;
+    const g = await loadGraph(inv.id);
+    const q = (await openQuestions(inv.id))[0];
+    const seeds = [...seedPivots(inv.seed), ...harvestPivots(g, q?.subject_entity_id ?? subjectOf(g, { subject_entity_id: null }, inv.seed.name)?.id ?? null)];
+    if (!seeds.length) return;
+    console.log(`\n  capabilities (${label}): ${seeds.length} pivot seeds …`);
+    const sum = await runPivots(inv.id, seeds, { ctx, maxRuns: Number(s("pivot-max") ?? 30), log: (m) => console.log(m) });
+    if (sum.sources) { console.log(`  → ${sum.sources} sources · ${sum.claims} claims · ${sum.discovered.length} pivots discovered`); await rebuildCmd(inv.id); }
+  };
+  await pivotPass("bootstrap");
   for (let pass = 1; pass <= maxPasses && !stop; pass++) {
    if (maxPasses > 1) console.log(`\n════ pass ${pass}/${maxPasses} ════`);
    const before = await investigationStats(inv.id);
@@ -550,6 +560,7 @@ async function runLoop(id?: string) {
   }
    console.log(`\n  rebuilding …`);
    await rebuildCmd(inv.id);
+   await pivotPass(`pass ${pass}`);
    await judge(inv.id);
    const after = await investigationStats(inv.id);
    const added = (Number(after.relations) + Number(after.attributes)) - (Number(before.relations) + Number(before.attributes));

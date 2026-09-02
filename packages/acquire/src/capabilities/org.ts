@@ -68,16 +68,17 @@ export function parseEdgarSubmissions(j: EdgarSubmissions): CapabilityResult {
       const cur = byForm.get(form);
       if (!cur) byForm.set(form, { n: 1, first: date, last: date });
       else { cur.n++; if (date < cur.first) cur.first = date; if (date > cur.last) cur.last = date; }
-      if (NOTABLE_FORMS.has(form) && listed < 25) {
+      if (NOTABLE_FORMS.has(form) && listed < 15) {
         listed++;
         const acc = rec.accessionNumber[i]!.replace(/-/g, "");
         const url = `https://www.sec.gov/Archives/edgar/data/${cik}/${acc}/${rec.primaryDocument[i]}`;
         r.edges.push({ subject: name, predicate: "filed", object: `${form} ${date}`, at: date, qualifiers: { form, url, ...(rec.primaryDocDescription?.[i] ? { description: rec.primaryDocDescription[i]! } : {}) } });
       }
     }
-    for (const [form, s] of byForm) r.attributes.push({ entity: name, key: `filings:${form}`, value: `${s.n} (${s.first} → ${s.last})` });
-    const first = [...rec.filingDate].sort()[0];
-    if (first) r.attributes.push({ entity: name, key: "first_sec_filing", value: first });
+    // per-form counts only for the forms an analyst reads by name; everything else folds into one total
+    for (const [form, s] of byForm) if (NOTABLE_FORMS.has(form) || form === "4" || form === "3") r.attributes.push({ entity: name, key: `filings:${form}`, value: `${s.n} (${s.first} → ${s.last})` });
+    const dates = [...rec.filingDate].sort();
+    if (dates.length) { r.attributes.push({ entity: name, key: "sec_filings_total", value: `${rec.form.length} (${dates[0]} → ${dates[dates.length - 1]})` }); r.attributes.push({ entity: name, key: "first_sec_filing", value: dates[0]! }); }
   }
   r.pivots = dedupePivots(r.pivots);
   return r;
@@ -411,7 +412,8 @@ const ppOpts = { rateKey: "projects.propublica.org", minIntervalMs: 1000 };
 export async function nonprofit(q: string): Promise<CapabilityResult> {
   let ein = q.replace(/-/g, "");
   if (!/^\d{9}$/.test(ein)) {
-    const s = await getJson<{ organizations?: { ein: number; name: string; score?: number }[] }>(`${PP}/search.json?q=${encodeURIComponent(q)}`, ppOpts);
+    // ProPublica answers an empty search with HTTP 404 + a JSON body — not an error, just no nonprofit
+    const s = (await getJsonOrNull<{ organizations?: { ein: number; name: string; score?: number }[] }>(`${PP}/search.json?q=${encodeURIComponent(q)}`, ppOpts)) ?? {};
     const st = stem(q);
     const hit = s.organizations?.find((o) => stem(o.name) === st) ?? s.organizations?.[0];
     if (!hit) return emptyResult({ capability: "org.nonprofit", source: "ProPublica Nonprofit Explorer (IRS 990)", fetched_at: now(), grade: "A", tier: "easy", note: `no nonprofit matched "${q}"` });
