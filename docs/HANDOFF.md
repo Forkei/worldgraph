@@ -150,3 +150,13 @@ He spotted three things in the published page; all three are fixed and committed
 3. **Sources not visible.** The OnlyFans "account" came from a WhatsMyName probe of `@example.realm` — a catch-all
    page false positive. Now: a profile must echo the username to count; the `@` is stripped; the page shows source
    chips on every row plus a Sources sheet.
+4. **Follow-ups from the second run** (commits `7bd609e`…`89fbda7`+): the pivot harvest walks from a domain seed
+   to the org/person that owns or uses it, then harvests their people and handles (this is how `alexhs` got
+   probed); two accounts with different identifiers never merge (the judge was spending calls on Cloudflare IP
+   pairs); the username probe control-checks every hit with a random name and drops catch-all sites — and drops
+   hits whose control could not be checked (non-404 failure). **Caveat:** that last rule is conservative: for
+   `example.realm` it dropped Instagram/TikTok hits that were real (those sites block the control), though the
+   Instagram account is known anyway from the site itself. A retry-once on the control would recover most of them.
+   `wg pivot --refetch` now bypasses the cache. Agents also `propose_mission`ed Alexh, member22 and Kim on
+   their own — the pursuit behaviour works; what they find is bounded by how little the open web says about a
+   small Minecraft community.
