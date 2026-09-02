@@ -9,6 +9,7 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, type SearchResult } from "@worldgraph/acquire";
+import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, webPrimitives, gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives, exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox, type CapabilityResult } from "@worldgraph/acquire";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, type Side } from "@worldgraph/extract";
 import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
@@ -24,7 +25,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -48,6 +49,7 @@ async function main() {
     case "dispatch": return void (await dispatch(sub ?? s("inv")));
     case "run": return runLoop(sub ?? s("inv"));
     case "capabilities": case "caps": return capabilitiesCmd();
+    case "cap": return capCmd(sub, rest);
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
     case "claims": return claims(sub ?? s("inv"));
@@ -232,6 +234,49 @@ async function capabilitiesCmd() {
     const need = (c.requires as { key?: string }).key;
     console.log(`${c.enabled ? "on " : "OFF"}  ${c.id.padEnd(24)} ${c.kind.padEnd(8)} ${c.tier}  ${c.inputs.join(",").padEnd(10)} → ${c.outputs.join(",").padEnd(6)}  $${c.cost_usd}${need ? `  needs ${need}${c.enabled ? "" : " (missing)"}` : ""}`);
   }
+}
+
+// Run a single capability by id against an input value, and print the typed result (research/17). Live, no
+// cache — this is the "try a tool" command; the pivot engine (next phase) is what does cache-first + chaining.
+type CapRunner = (args: string[]) => Promise<CapabilityResult>;
+const CAP_RUNNERS: Record<string, CapRunner> = {
+  "infra.rdap": (a) => rdap(a[0]!),
+  "infra.dns": (a) => dns(a[0]!),
+  "infra.cert_transparency": (a) => certTransparency(a[0]!),
+  "infra.wayback": (a) => wayback(a[0]!),
+  "infra.urlscan": (a) => urlscanSearch(a[0]!),
+  "infra.reverse_ip": (a) => reverseIp(a[0]!),
+  "infra.asn": (a) => asn(a[0]!),
+  "infra.web_primitives": (a) => webPrimitives(a[0]!),
+  "people.gravatar": (a) => gravatar(a[0]!),
+  "people.fec": (a) => fecDonations(a.join(" ")),
+  "people.academic": (a) => academic(a.join(" ")),
+  "people.username": (a) => usernameAccounts(a[0]!),
+  "people.breach": (a) => (a[0] ? hibpAccount(a[0]) : hibpCatalog()),
+  "people.email_pattern": (a) => hunter(a[0]!),
+  "people.relatives": (a) => relatives(a.join(" ")),
+  "media.exif": (a) => exif(a[0]!),
+  "media.reverse_image": (a) => reverseImage(a[0]!),
+  "geo.geocode": (a) => geocode(a.join(" ")),
+  "geo.map": (a) => nearbyPOIs(Number(a[0]), Number(a[1]), a[2] ? Number(a[2]) : undefined, a[3]),
+  "geo.chronolocation": (a) => chronoCheck(Number(a[0]), Number(a[1]), a[2]!),
+  "geo.aircraft": (a) => aircraftInBox(Number(a[0]), Number(a[1]), Number(a[2]), Number(a[3])),
+};
+
+async function capCmd(id?: string, args: string[] = []) {
+  if (!id || !CAP_RUNNERS[id]) return fail(`wg cap <id> <input…>\n  ids: ${Object.keys(CAP_RUNNERS).join(", ")}`);
+  const input = args.filter((x) => !x.startsWith("-"));
+  if (!input.length) return fail(`wg cap ${id} <input>   e.g.  wg cap infra.cert_transparency openai.com`);
+  const r = await CAP_RUNNERS[id]!(input);
+  if (b("json")) { console.log(JSON.stringify(r, null, 2)); return; }
+  const p = r.provenance;
+  console.log(`\n${id}  "${input.join(" ")}"  →  ${p.source} · grade ${p.grade} · ${p.tier}${p.gated ? " · GATED" : ""}`);
+  if (p.note) console.log(`  ! ${p.note}`);
+  console.log(`  entities ${r.entities.length} · edges ${r.edges.length} · attributes ${r.attributes.length} · pivots ${r.pivots.length}\n`);
+  for (const e of r.entities.slice(0, 8)) console.log(`  • ${e.name}  [${e.type}${e.kind ? "/" + e.kind : ""}]`);
+  for (const e of r.edges.slice(0, 10)) console.log(`  → ${e.subject}  —${e.predicate}→  ${e.object}${e.at ? `  (${e.at})` : ""}${e.value ? `  =${e.value}` : ""}`);
+  for (const a of r.attributes.slice(0, 8)) console.log(`  · ${a.entity}: ${a.key} = ${a.value}`);
+  if (r.pivots.length) console.log(`\n  pivots: ${r.pivots.slice(0, 15).map((pv) => `${pv.kind}:${pv.value}${pv.weak ? "~" : ""}`).join("  ")}`);
 }
 
 async function search(id?: string, ...queryParts: string[]) {
