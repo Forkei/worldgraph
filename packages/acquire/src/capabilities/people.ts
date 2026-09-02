@@ -166,11 +166,23 @@ export async function usernameAccounts(username: string, opts: { concurrency?: n
       return { site, url: target, verdict: status ? checkSite(site, status, "") : "unknown" as const };
     }
   });
-  for (const h of hits) {
-    if (h.verdict !== "exists") continue;
+  // control probe: a site that also "has" a random nonsense username is a catch-all page, not a profile directory
+  // (Fanslist echoes whatever you search for). One extra request per hit, so false positives cost little to kill.
+  const control = `wg${Math.random().toString(36).slice(2, 10)}x${Date.now().toString(36).slice(-4)}`;
+  const confirmed = await pool(hits.filter((h) => h.verdict === "exists"), 6, async (h) => {
+    const target = h.site.uri_check.replace(/\{account\}/g, encodeURIComponent(control));
+    try {
+      const body = await getText(target, { rateKey: new URL(target).host, minIntervalMs: 300, timeoutMs: 12_000 });
+      return { ...h, catchAll: checkSite(h.site, 200, body, control) === "exists" };
+    } catch { return { ...h, catchAll: false }; }
+  });
+  let dropped = 0;
+  for (const h of confirmed) {
+    if (h.catchAll) { dropped++; continue; }
     r.edges.push({ subject: username, predicate: "has_account_on", object: h.site.name, qualifiers: h.site.cat ? { category: h.site.cat } : undefined });
     r.pivots.push({ kind: "url", value: h.url, weak: true });
   }
+  if (dropped) prov.note += `; ${dropped} catch-all site${dropped === 1 ? "" : "s"} discarded by control probe`;
   r.attributes.push({ entity: username, key: "sites_checked", value: String(sites.length) });
   r.pivots = dedupePivots(r.pivots);
   return r;
