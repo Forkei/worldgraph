@@ -271,7 +271,9 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
         return groups.map((gr) => `• ${gr[0]}${NL}    ${gr.slice(1).join(NL + "    ")}`).join(NL);
       }
       case "why": {
-        const g = await graph(); const kind = S("kind") as "link" | "attribute" | "entity"; let id = S("id");
+        const g = await graph(); const kind0 = S("kind"); let id = S("id");
+        const pm = /^(link|attr|attribute|entity|claim):/i.exec(id); if (pm) id = id.slice(pm[0].length);
+        const kind = ((pm?.[1]?.toLowerCase() === "attr" ? "attribute" : pm?.[1]?.toLowerCase()) || kind0 || "link") as "link" | "attribute" | "entity";
         if (id.length < 36) { const pool = kind === "link" ? g.links.map((l) => l.id) : kind === "attribute" ? g.attributes.map((a) => a.id) : [...g.entities.keys()]; id = pool.find((x) => x.startsWith(id)) ?? id; }
         const w = await why(inv.id, kind, id);
         return `${w.label}\n${w.claims.length} claims · ${w.origins} independent origins\n` + w.claims.map((c) => `  [${c.publisher_kind ?? "?"}] ${c.domain} ${c.asserted_at ?? ""}\n    “${esc(c.quote).slice(0, 240)}”\n    ${c.url}`).join("\n") + (w.decisions?.length ? `\ndecisions: ${w.decisions.map((d) => d.method + " " + d.verdict + (d.note ? " — " + d.note.slice(0, 80) : "")).join("; ")}` : "");
