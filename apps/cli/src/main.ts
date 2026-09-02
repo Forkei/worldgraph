@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 // wg — WorldGraph CLI (M0): db migrate · investigate · investigations · stats · claims · source · proposed · sql
 import { parseArgs } from "node:util";
-import { readFileSync, appendFileSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { registry, getPolicy, env, uuidv7 } from "@worldgraph/core";
 import {
   migrate, query, closePool, createInvestigation, getInvestigation, listInvestigations, setInvestigationStatus,
@@ -25,7 +25,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, out: { type: "string" }, ceiling: { type: "string" }, steps: { type: "string" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, out: { type: "string" }, ceiling: { type: "string" }, steps: { type: "string" }, models: { type: "string" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -53,6 +53,7 @@ async function main() {
     case "pivot": return pivotCmd(sub ?? s("inv"), ...rest);
     case "export-html": return exportHtmlCmd(sub ?? s("inv"));
     case "agent": return agentCmd(sub ?? s("inv"));
+    case "eval": return evalCmd();
     case "ask": return askCmd(sub ?? s("inv"), rest.filter((x) => !x.startsWith("-")).join(" "));
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
@@ -280,6 +281,41 @@ async function agentCmd(id?: string) {
   });
   console.log(`\n══ report (${r.steps} steps · ${r.toolCalls} tool calls · $${r.usd.toFixed(2)} · ${Math.round((Date.now() - t0) / 60000)} min)${r.stopped ? " · stopped: " + r.stopped : ""} ══\n\n${r.report}\n`);
   console.log(`wg export-html ${short(inv.id)} --out case.html`);
+}
+
+// `wg eval --seed X --kind Y --goal "…" --models haiku-4-5,sonnet-5 [--ceiling 1.5]` — the model eval: the same case
+// investigated from scratch by each model under the same ceiling, then measured (entities, links, corroborated
+// facts, sources, cost, steps, minutes). Each run is its own investigation "EVAL <model> · <seed>" you can open.
+async function evalCmd() {
+  const seed = s("seed"), goal = s("goal"), kind = s("kind") ?? "person";
+  const models = (s("models") ?? "haiku-4-5,sonnet-5").split(",").map((x) => x.trim()).filter(Boolean);
+  if (!seed || !goal) return fail('wg eval --seed X --kind person|organization|domain --goal "…" --models a,b [--ceiling 1.5] [--steps 200]');
+  const extractor = getModel(s("model") ?? DEFAULT_MODEL);
+  const rows: { model: string; inv: string; entities: number; links: number; corroborated: number; sources: number; usd: number; steps: number; tools: number; min: number; stopped: string | null; report: string }[] = [];
+  for (const alias of models) {
+    const agentModel = getModel(alias);
+    if (!hasKeyFor(agentModel)) { console.log(`skip ${alias}: no key`); continue; }
+    const inv = await createInvestigation({ title: `EVAL ${alias} · ${seed}`, seed: { kind, name: seed, hints: {} }, goal_text: goal, policy: "unrestricted" });
+    console.log(`\n════ ${agentModel.label} → ${short(inv.id)} ════`);
+    const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model: extractor, policy: getPolicy("unrestricted"), registry: registry(), log: () => {} };
+    const t0 = Date.now();
+    const r = await runInvestigator(inv, {
+      ctx, model: agentModel, ceilingUsd: s("ceiling") ? Number(s("ceiling")) : 1.5, maxSteps: s("steps") ? Number(s("steps")) : 200,
+      log: (m) => { if (/^\s*▸/.test(m)) console.log(m.slice(0, 120)); },
+      rebuild: async () => { const st = await rebuild(inv.id, { currentPromptVersion: promptVersion(registry()) }); return `rebuilt: ${st.entities} entities · ${st.links} links`; },
+      judge: async () => { await judge(inv.id); return "judged"; },
+    });
+    await rebuild(inv.id, { currentPromptVersion: promptVersion(registry()) });
+    const g = await loadGraph(inv.id);
+    const [src] = await query<{ n: string }>(`SELECT count(*) n FROM sources WHERE investigation_id=$1 AND status='extracted'`, [inv.id]);
+    const corroborated = g.links.filter((l) => l.grade === "established" || l.grade === "corroborated").length + g.attributes.filter((a) => a.grade === "established" || a.grade === "corroborated").length;
+    rows.push({ model: agentModel.label, inv: short(inv.id), entities: g.entities.size, links: g.links.length, corroborated, sources: Number(src?.n ?? 0), usd: r.usd, steps: r.steps, tools: r.toolCalls, min: Math.round((Date.now() - t0) / 60000), stopped: r.stopped, report: r.report });
+  }
+  console.log(`\n${"model".padEnd(24)} ${"inv".padEnd(9)} ${"entities".padStart(8)} ${"links".padStart(6)} ${"corrob.".padStart(8)} ${"sources".padStart(8)} ${"$".padStart(6)} ${"steps".padStart(6)} ${"tools".padStart(6)} ${"min".padStart(4)}  stopped`);
+  for (const r of rows) console.log(`${r.model.padEnd(24)} ${r.inv.padEnd(9)} ${String(r.entities).padStart(8)} ${String(r.links).padStart(6)} ${String(r.corroborated).padStart(8)} ${String(r.sources).padStart(8)} ${r.usd.toFixed(2).padStart(6)} ${String(r.steps).padStart(6)} ${String(r.tools).padStart(6)} ${String(r.min).padStart(4)}  ${r.stopped ?? "finished on its own"}`);
+  const out = s("out") ?? `eval-${seed.replace(/[^a-z0-9.-]+/gi, "_")}.md`;
+  writeFileSync(out, `# Model eval — ${seed} (${kind})\n\nGoal: ${goal}\n\nCeiling $${s("ceiling") ?? "1.5"} per run · extractor ${extractor.label} · ${new Date().toISOString().slice(0, 10)}\n\n| model | inv | entities | links | corroborated | sources | $ | steps | tool calls | min | ended |\n|---|---|---|---|---|---|---|---|---|---|---|\n${rows.map((r) => `| ${r.model} | ${r.inv} | ${r.entities} | ${r.links} | ${r.corroborated} | ${r.sources} | ${r.usd.toFixed(2)} | ${r.steps} | ${r.tools} | ${r.min} | ${r.stopped ?? "finished"} |`).join("\n")}\n\n${rows.map((r) => `## ${r.model} (${r.inv})\n\n${r.report}\n`).join("\n")}`, "utf8");
+  console.log(`\nwrote ${out}`);
 }
 
 // `wg ask <inv> "question"` — ask the graph: a one-shot run of the investigator's read tools that answers from the
@@ -724,8 +760,7 @@ async function serve() {
   const { spawn } = await import("node:child_process");
   const port = s("port") ?? "5590";
   console.log(`starting WorldGraph UI on http://localhost:${port} …`);
-  const isWin = process.platform === "win32";
-  const child = spawn(isWin ? "pnpm.cmd" : "pnpm", ["-s", "tsx", "apps/web/src/server.ts"], { cwd: process.cwd(), env: { ...process.env, WG_PORT: port }, stdio: "inherit" });
+  const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "apps/web/src/server.ts"], { cwd: process.cwd(), env: { ...process.env, WG_PORT: port }, stdio: "inherit" });
   child.on("close", (c) => process.exit(c ?? 0));
 }
 
