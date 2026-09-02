@@ -4,3 +4,4 @@ export * from "./types.ts";
 export * from "./domain.ts"; // Cluster A — domain / infrastructure
 export * from "./people.ts"; // Cluster B — people / email
 export * from "./media.ts"; //  Cluster C — media / geo
+export * from "./org.ts"; //    Cluster D — organizations
