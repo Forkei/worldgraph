@@ -86,6 +86,7 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
 .q{font-size:10.5px;color:var(--muted);background:var(--panel2);padding:1px 6px;border-radius:5px}
 .sc{font-size:10px;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);padding:0 5px;border-radius:5px;font-family:"IBM Plex Mono",ui-monospace,monospace}
 .why{font-size:11px;color:var(--accent);background:none;border:none;padding:0;min-height:0}
+.ref{font-size:10.5px;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent);border-radius:999px;padding:0 8px;min-height:0;line-height:1.6;vertical-align:baseline;margin:0 2px}
 .ev{margin-top:6px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;font-size:12px}
 .ev .c{padding:6px 0;border-top:1px solid var(--line)}
 .ev .c:first-child{border-top:none;padding-top:0}
@@ -183,7 +184,22 @@ const GLABEL = {established:"established",corroborated:"corroborated",single_sou
 const typeVar = (t) => "--" + (TYPES.includes(t) ? t : "other");
 async function api(u, opt) { const r = await fetch(u, opt); if (!r.ok) throw new Error(await r.text()); return r.json(); }
 const post = (u, body) => api(u, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
-const md = (t) => esc(t).replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+// graph ids in prose (link:845710f1, attr:a379c051, entity:6c15a64c) become small tappable chips that open the evidence
+const md = (t) => esc(t).replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>")
+  .replace(/\[?\b(link|attr|attribute|entity|claim):([0-9a-f]{6,})\]?/g, (m, k, id) => `<button class="ref" data-k="${k === "attr" ? "attribute" : k}" data-id="${id}">${k === "entity" ? "who" : "evidence"}</button>`);
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest(".ref"); if (!b || !G) return;
+  if (b.nextElementSibling && b.nextElementSibling.classList.contains("ev")) { b.nextElementSibling.remove(); return; }
+  const k = b.dataset.k, pre = b.dataset.id;
+  if (k === "entity") { const ent = G.entities.find((x) => x.id.startsWith(pre)); if (ent) { location.hash = "#/inv/" + INV + "/graph"; setTimeout(() => { openNode(ent.id); focusNode(ent.id); }, 150); } return; }
+  const pool = k === "link" ? G.links : G.attrs; const hit = pool.find((x) => x.id.startsWith(pre)); if (!hit) return;
+  b.insertAdjacentHTML("afterend", `<div class="ev"><span class="spin"></span></div>`);
+  try { const r = await api(`/api/why/${INV}/${k}/${hit.id}`);
+    let h = `<div style="color:var(--muted);margin-bottom:4px">${esc(r.label || "")} · ${r.claims.length} claim(s) · ${r.origins} independent origin(s)</div>`;
+    for (const c of r.claims) h += `<div class="c"><div class="src"><span>${esc(c.domain || "")}</span>${c.publisher_kind ? `<span>[${esc(c.publisher_kind)}]</span>` : ""}${c.asserted_at ? `<span>${esc(c.asserted_at)}</span>` : ""}</div><blockquote>${esc((c.quote || "").slice(0, 260))}</blockquote>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.url.slice(0, 70))}</a>` : ""}</div>`;
+    b.nextElementSibling.innerHTML = h || "no provenance";
+  } catch (err) { b.nextElementSibling.textContent = "error: " + err.message; }
+});
 const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
 
 /* ---------- jobs: a run lives on the server; the page only watches it ---------- */

@@ -396,7 +396,13 @@ Finish only when the stopping bar (consult_playbook("investigator/stopping")) is
 
 QUESTION: ${deps.question}
 
-Work the graph like an analyst: look up the entities the question names, follow links, check paths and timelines, read the evidence (why) behind the facts that carry your answer, and note grades and contested flags. Then call finish with the answer: one paragraph with confidence in estimative language, then the evidence as claim/link ids with quotes and sources, then what the graph does not know.`;
+Work the graph like an analyst: look up the entities the question names, follow links, check paths and timelines, read the evidence (why) behind the facts that carry your answer, and note grades and contested flags.
+
+Then call finish with the answer in this shape, and keep it SHORT — it is read on a phone:
+- First line: the answer in one or two plain sentences, with a confidence word (almost certain / likely / unclear / unlikely / no evidence).
+- Then at most four short bullets of evidence. Each bullet: the fact in plain words, the source name, and a quote of at most ~15 words. Put the graph id at the END of the bullet in square brackets, e.g. [link:845710f1] — never inside a sentence.
+- Then one line starting "Unknown:" with what the graph cannot tell.
+No headings, no bold, no restating the question, no ids in prose. Under 150 words unless the question truly needs more.`;
   const r = await runToolLoop(model, {
     system: deps.question ? askSystem : system, user: deps.question ? `Answer the question.` : `Begin. Frame the question, inventory the graph, write the plan, then work it.`,
     tools: deps.question ? tools.filter((t) => READ_ONLY.has(t.name)) : tools, exec,
