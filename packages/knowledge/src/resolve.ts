@@ -61,6 +61,13 @@ export function orgIdentityKey(keys: Record<string, string[]>): string {
   return r ? `registry_id:${r}` : "";
 }
 const hasAnyKey = (e: Provisional) => HARD_KEYS.some((k) => (e.keys[k] ?? []).length > 0);
+/** registry ids are "scheme:value": two records conflict only when a scheme present on BOTH sides shares no value */
+export function schemeConflict(a: Iterable<string>, b: Iterable<string>): boolean {
+  const by = (xs: Iterable<string>) => { const m = new Map<string, Set<string>>(); for (const v of xs) { const i = v.indexOf(":"); const scheme = i > 0 ? v.slice(0, i) : "_"; (m.get(scheme) ?? m.set(scheme, new Set()).get(scheme)!).add(v); } return m; };
+  const ma = by(a), mb = by(b);
+  for (const [scheme, va] of ma) { const vb = mb.get(scheme); if (vb && ![...va].some((v) => vb.has(v))) return true; }
+  return false;
+}
 
 function hardKeyRelation(a: Provisional, b: Provisional): "match" | "conflict" | "none" {
   let out: "match" | "conflict" | "none" = "none";
@@ -68,7 +75,10 @@ function hardKeyRelation(a: Provisional, b: Provisional): "match" | "conflict" |
     const ka = a.keys[k] ?? [], kb = b.keys[k] ?? [];
     if (!ka.length || !kb.length) continue;
     if (ka.some((v) => kb.includes(v))) return "match";
-    if (k === "email" || k === "licence" || k === "registry_id" || k === "orcid" || k === "docket") out = "conflict";
+    // registry ids are scheme:value — a Wikidata id and an SEC CIK on the same company are not a conflict; only two
+    // different values under the SAME scheme are
+    if (k === "registry_id") { if (schemeConflict(ka, kb)) out = "conflict"; continue; }
+    if (k === "email" || k === "licence" || k === "orcid" || k === "docket") out = "conflict";
     if (k === "identifier" && a.type === "account" && b.type === "account") out = "conflict";   // an account IS its identifier (two IPs are two accounts)
   }
   // two organizations on different registrable domains are different organizations (a company has one primary web
@@ -232,7 +242,8 @@ export function resolve(ents: Provisional[], decisions: Decision[]): ResolveResu
   const typeOf = new Map(ents.map((e) => [e.id, e.type]));
   const conflicts = (ra: string, rb: string) => {
     const ka = clusterKeys(ra), kb = clusterKeys(rb);
-    if (["email", "licence", "registry_id", "orcid", "docket"].some((k) => ka[k] && kb[k] && ![...ka[k]!].some((v) => kb[k]!.has(v)) && ka[k]!.size && kb[k]!.size)) return true;
+    if (["email", "licence", "orcid", "docket"].some((k) => ka[k] && kb[k] && ![...ka[k]!].some((v) => kb[k]!.has(v)) && ka[k]!.size && kb[k]!.size)) return true;
+    if (ka.registry_id && kb.registry_id && schemeConflict(ka.registry_id, kb.registry_id)) return true;
     if (typeOf.get(ra) === "account" && typeOf.get(rb) === "account" && ka.identifier && kb.identifier && ![...ka.identifier].some((v) => kb.identifier!.has(v))) return true;
     // organizations: disjoint registrable domains conflict unless some other identifier is shared
     if (typeOf.get(ra) === "organization" && typeOf.get(rb) === "organization") {
