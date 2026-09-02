@@ -77,6 +77,11 @@ on the user & purpose, not the tool; off by default, human review.
 - **Firecrawl map/crawl/interact** are near-free upgrades to the fetch layer (site inventory, JS pages) —
   worth wiring early.
 
+## Implementation specs
+The buildable, live-verified specs (exact endpoints, auth, limits, real output shapes, evidence grades, build
+sketches) live in the companion **`research/17-capability-specs.md`**, written cluster by cluster. This doc stays
+the broad catalog; 17 is the engineering plan.
+
 ## Relation to the roadmap
 This is the "capabilities" content for the vision phase. Per the maintainer the agent won't acquire capabilities — we
 build them as clean adapters and the agent uses whatever's enabled (the capability→tool binding). Build order:
