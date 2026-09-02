@@ -190,3 +190,18 @@ Built and committed (`955a11a`…):
 read-only, ends with an answer); the model eval harness (Sonnet-low did well; Haiku/Gemini/open-weights not yet
 compared); a `read_url` that can fetch PDFs/archives explicitly; the old `wg run` loop still exists alongside
 (keep for scripted/cheap runs or retire — the maintainer's call).
+
+## 9. Same day, later: mobile app, eval, cleanup
+- **`wg serve` is now the mobile app** (`apps/web`): investigations list, new case (goal optional — defaults to
+  "learn everything", phrased per kind), graph with bottom-sheet dossier + evidence, **Ask** (the ask-the-graph
+  agent, streamed, answers kept in the notebook), **Report**, **Run** (start/stop the investigator, live log).
+  Runs are **server-side jobs** that outlive the browser (the first version tied them to the SSE connection and
+  killed the investigator when the phone navigated away — real bug, found by the maintainer). Binds 0.0.0.0 so the phone
+  reaches it over Tailscale. Node ≥ 20 on Windows: spawn `node` + tsx directly, never `pnpm.cmd`.
+- **Model eval** (`wg eval`, `research/18`): Sonnet 5 low is the default investigator model; Haiku is not good
+  enough to drive; Sonnet medium finishes early with fewer facts. Gemini/open-weight need a tool loop first.
+- **Cleanup**: `wg run` loop and mission agent retired; `wg dispatch` / `wg pivot` remain as tools.
+- **Resilience**: the machine's DNS dropped three times today; the tool loop now retries transient API failures
+  with backoff (8 attempts, up to ~8 min). Under a longer outage the run fails and must be restarted from the app.
+- Small thing seen: the agent sometimes passes a made-up hypothesis id ("h2") — accept ordinals or list ids in
+  the board output more prominently.
