@@ -9,7 +9,7 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, CAP_RUNNERS, type SearchResult, type PivotKind } from "@worldgraph/acquire";
-import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, type Side } from "@worldgraph/extract";
+import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, buildClaims, type Side } from "@worldgraph/extract";
 import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers, runPivots, harvestPivots, seedPivots, type PivotSeed } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
@@ -24,7 +24,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -374,11 +374,14 @@ async function dispatch(id?: string) {
   const q = await ensureQuestion(inv, g);
   const subj = subjectOf(g, q, inv.seed.name);
   if (!subj) return fail("no subject entity in the graph yet — run an initial fetch first");
-  const gaps = computeGaps(g, subj.id, q.indicators, 2);   // corroboration target: >=2 independent origins
+  const ring = Number(s("ring") ?? 2);
+  const gaps = computeGaps(g, subj.id, q.indicators, 2, { maxRing: ring });   // corroboration target: >=2 independent origins
   const drafts = buildMissions(gaps);
   await saveMissions(inv.id, q.id, drafts);
-  console.log(`subject: ${subj.name}  ·  ${q.indicators.length} indicators  ·  ${gaps.length} gaps → ${drafts.length} missions\n`);
-  for (const m of drafts) console.log(`${m.score.toFixed(2)}  ${m.objective}\n       ↳ ${m.frontier[0]}`);
+  const rings = [0, 1, 2, 3].map((r) => gaps.filter((x) => x.ring === r).length).filter((x, i) => x || i === 0);
+  console.log(`subject: ${subj.name}  ·  ${q.indicators.length} indicators  ·  ${gaps.length} gaps (by ring: ${rings.join(" / ")}) → ${drafts.length} missions\n`);
+  for (const m of drafts.slice(0, Number(s("limit") ?? 30))) console.log(`${m.score.toFixed(2)}  ${m.objective}\n       ↳ ${m.frontier[0]}`);
+  if (drafts.length > Number(s("limit") ?? 30)) console.log(`… ${drafts.length - Number(s("limit") ?? 30)} more`);
   return drafts;
 }
 
@@ -387,7 +390,7 @@ interface Staged { source: SourceRow; claims: (import("@worldgraph/core").Relati
 // A mission agent (M2 step 4): given an objective, it drives its own tool loop — search, choose URLs to read,
 // see the proposed claims, and contribute the ones it trusts (curation happens before anything enters the
 // graph). Fixes/deletes are retract_source + challenge, never a raw delete. Returns a verdict + trail.
-async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInvestigation>>>, ctx: Parameters<typeof extractSource>[0], blobs: FsBlobStore, mission: { id: string; objective: string; frontier: string[]; scope: Record<string, unknown> }, agentModel: ReturnType<typeof getModel>, per: number) {
+async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInvestigation>>>, ctx: Parameters<typeof extractSource>[0], blobs: FsBlobStore, mission: { id: string; objective: string; frontier: string[]; scope: Record<string, unknown>; question_id?: string | null }, agentModel: ReturnType<typeof getModel>, per: number) {
   const staged = new Map<string, Staged>();
   const trail: string[] = [];
   let contributed = 0, usd = 0;
@@ -397,8 +400,11 @@ async function runAgentMission(inv: NonNullable<Awaited<ReturnType<typeof getInv
     { name: "read_url", description: "Fetch a page and extract candidate claims from it. Returns the claims as a numbered list; nothing enters the graph until you contribute. Read pages that look relevant to the mission.", input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
     { name: "graph_lookup", description: "Look up what the graph already knows about a named entity (so you don't re-fetch known facts).", input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
     { name: "contribute", description: "Commit chosen candidate claims from a page you read into the graph. Give the url and the indices to keep (omit indices to keep all). Only contribute claims genuinely relevant and supported.", input_schema: { type: "object", properties: { url: { type: "string" }, indices: { type: "array", items: { type: "number" } } }, required: ["url"] } },
+    { name: "propose_mission", description: "Propose a follow-up mission on an entity you found important for the investigation (a key employer, associate, shell company, counterparty). It enters the dispatcher's queue and is ranked with everything else. Say why it serves the investigation goal.", input_schema: { type: "object", properties: { entity: { type: "string", description: "the entity the mission is about, as named in the page" }, objective: { type: "string", description: "one sentence: what to establish about it" }, why: { type: "string", description: "why this serves the investigation goal" } }, required: ["entity", "objective", "why"] } },
+    { name: "same_as", description: "Assert that two names on a page you read refer to the SAME entity (a rename, an alias, a maiden name, a brand vs legal name), backed by a verbatim quote. Recorded as an alias claim with that quote; the judge confirms the merge — you never merge directly.", input_schema: { type: "object", properties: { name_a: { type: "string" }, name_b: { type: "string" }, url: { type: "string", description: "a page you read with read_url" }, quote: { type: "string", description: "verbatim text from that page that establishes the identity" } }, required: ["name_a", "name_b", "url", "quote"] } },
     { name: "finish", description: "End the mission when the objective is met or the leads are exhausted. Summarize what you found.", input_schema: { type: "object", properties: { verdict: { type: "string", enum: ["found", "partial", "no_trace"] }, summary: { type: "string" } }, required: ["verdict", "summary"] } },
   ];
+  let proposed = 0;
 
   let finalVerdict = "partial", finalSummary = "";
   const traceFile = process.env.WG_TRACE || null;
@@ -465,21 +471,56 @@ ${(src.text ?? "").slice(0, 1200)}
       contributed += pick.length;
       return `committed ${pick.length} claim${pick.length === 1 ? "" : "s"} from ${safeHost(st.source.final_url ?? url)}`;
     }
+    if (name === "propose_mission") {
+      const entity = String(input.entity ?? "").trim(), objective = String(input.objective ?? "").trim(), why = String(input.why ?? "").trim();
+      if (!entity || !objective) return "entity and objective are required";
+      const g2 = await loadGraph(inv.id);
+      const known = [...g2.entities.values()].find((e) => e.name.toLowerCase() === entity.toLowerCase());
+      const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      await saveMissions(inv.id, mission.question_id ?? null, [{ objective: `${objective} — ${entity} (proposed: ${why.slice(0, 120)})`, scope: { entities: known ? [known.id] : [], entity_name: entity, indicators: [], ring: 1 }, frontier: [`"${entity}" ${objective}`], score: 0.6, score_parts: { agent: 1, ring_decay: 0.5 }, dedupe_key: `agent|${norm(entity)}|${norm(objective).slice(0, 60)}` }], "agent");
+      proposed++;
+      return `proposed: "${objective}" on ${entity}${known ? "" : " (not yet in the graph)"} — queued for the dispatcher`;
+    }
+    if (name === "same_as") {
+      const a = String(input.name_a ?? "").trim(), bName = String(input.name_b ?? "").trim(), url = String(input.url ?? ""), quote = String(input.quote ?? "").trim();
+      const st = staged.get(url);
+      if (!st) return "read that url first (same_as must cite a page you read)";
+      if (!a || !bName || quote.length < 12) return "name_a, name_b and a real quote are required";
+      if (!(st.source.text ?? "").includes(quote.slice(0, 60))) return "that quote is not on the page — cite verbatim text";
+      const g2 = await loadGraph(inv.id);
+      const ea = [...g2.entities.values()].find((e) => e.name.toLowerCase() === a.toLowerCase());
+      const type = ea?.type ?? (st.claims.find((c) => c.kind === "relation" && (c.subject.name === a || c.object.name === a)) as { subject?: { name: string; type: string }; object?: { name: string; type: string } } | undefined)?.subject?.type ?? "person";
+      // an alias claim on the page's source, quote-backed: the resolver proposes the pair, the judge decides (never a direct merge)
+      const out = { mentions: [{ ref: "m1", surface: a, name: a, type, type_label: "", type_parent: "", kind: "", hints: [] }], relations: [],
+        attributes: [{ entity: "m1", key: "aliases", key_parent: "", value: bName, datatype: "string" as const, quote, attributed_to: "", confidence: 1, attribute_class: "public" as const, temporal_kind: "timeless" as const, valid_from: "", valid_to: "", date: "", time_qualifier: "unknown" as const, inferred: false, derivation: "agent_same_as" }],
+        page: { published_at: "", summary: "", publisher_name: "", publisher_kind: "" } };
+      const text = st.source.text ?? "";
+      const chunk = { index: 0, start: 0, end: text.length, text, hash: sha256(`same_as|${url}|${a}|${bName}`) };
+      const { claims } = buildClaims({ ...ctx, model: { ...ctx.model, id: `agent:${agentModel.id}` } }, st.source, chunk, out, promptVersion(ctx.registry), 0, new Set(), null);
+      await insertClaimsBatch(claims);
+      return `recorded: "${a}" also known as "${bName}" (alias claim with your quote); the judge will confirm the merge on rebuild`;
+    }
     if (name === "finish") { finalVerdict = String(input.verdict ?? "partial"); finalSummary = String(input.summary ?? ""); return "ok"; }
     return "unknown tool";
   };
+  let failures = 0;   // consecutive network/tool failures — after a few, tell the agent to stop instead of letting it retry for 20 steps
   const exec = async (name: string, input: Record<string, unknown>): Promise<string> => {
     trace(`
 >>> TOOL ${name}(${JSON.stringify(input).slice(0, 300)})`);
-    const out = await rawExec(name, input);
+    let out: string;
+    try { out = await rawExec(name, input); }
+    catch (e) { out = `tool error: ${String((e as Error).message).slice(0, 160)}`; }
+    const failed = /^(tool error|could not fetch|no results$)/.test(out) || /fetch failed|ENOTFOUND|ECONNRESET|timeout/i.test(out.slice(0, 200));
+    failures = failed ? failures + 1 : 0;
+    if (failures >= 3) out += "\n\nNETWORK/TOOLS ARE FAILING REPEATEDLY — stop retrying and call finish now with verdict \"partial\" and a one-line summary.";
     trace(`<<< ${out.slice(0, 1400)}`);
     return out;
   };
 
-  const system = `You are an OSINT mission agent working one lead for a larger investigation. Objective:\n\n${mission.objective}\n\nWork the objective and nothing else. Use search to find pages, read_url to inspect the promising ones (you choose which — do not read everything), and contribute only the claims that are relevant to THIS objective and clearly supported. Check graph_lookup before chasing something that may already be known. Read at most about ${per + 2} pages. When the objective is met or leads run out, call finish. Do not invent facts; every claim comes from a page you read.`;
+  const system = `You are an OSINT mission agent working one lead for a larger investigation. Objective:\n\n${mission.objective}\n\nInvestigation goal (for judging what matters): ${inv.goal_text}\n\nWork the objective and nothing else. Use search to find pages, read_url to inspect the promising ones (you choose which — do not read everything), and contribute only the claims that are relevant to THIS objective and clearly supported. Check graph_lookup before chasing something that may already be known. Read at most about ${per + 2} pages. When you meet an entity that clearly matters to the investigation goal (a key employer, associate, counterparty, shell company), call propose_mission for it — every discovered fact is a lead, not a checkbox. When a page shows two names are the same entity (a rename, alias, brand vs legal name), call same_as with the quote. When the objective is met or leads run out, call finish. Do not invent facts; every claim comes from a page you read.`;
   const r = await runToolLoop(agentModel, { system, user: `Begin the mission: ${mission.objective}`, tools, exec, maxSteps: 20, onStep: (t) => { if (t) { console.log("   · " + t.replace(/\s+/g, " ").slice(0, 150)); trace("\n### REASONING: " + t); } } });
   usd += r.usd;
-  return { verdict: finalVerdict, summary: finalSummary || r.finalText, trail, contributed, usd };
+  return { verdict: finalVerdict, summary: finalSummary || r.finalText, trail, contributed, proposed, usd };
 }
 
 function summarizeStaged(url: string, st: Staged): string {
@@ -491,18 +532,23 @@ function summarizeStaged(url: string, st: Staged): string {
   return `read ${url} — ${st.claims.length} candidate claims:\n${lines.join("\n")}\n(contribute the indices worth keeping)`;
 }
 
+// The autonomous loop (M2 steps 3–5, HANDOFF B2): dispatch → missions (agents, in parallel) → rebuild → pivot →
+// judge → repeat until the world SATURATES — the stop is "N passes without a material change" (the question's
+// stability rule), never a pass count. --passes is the optional owner ceiling; --budget an optional USD ceiling.
+//   wg run <inv> [--loop] [--passes 12] [--max 5] [--per 3] [--parallel 3] [--ring 2] [--budget 5] [--no-pivot] [--scripted]
 async function runLoop(id?: string) {
   const inv = id ? await getInvestigation(id) : null;
-  if (!inv) return fail('wg run <inv> [--max 5] [--per 3] [--model <m>]');
+  if (!inv) return fail('wg run <inv> [--loop] [--max 5] [--per 3] [--parallel 3] [--ring 2] [--passes 12] [--budget usd] [--model <m>]');
   const model = getModel(s("model") ?? DEFAULT_MODEL);
   if (!hasKeyFor(model)) return fail(`no API key for ${model.label}`);
   const ctx = { investigation: { id: inv.id, seed: inv.seed, goal_text: inv.goal_text }, model, policy: getPolicy("unrestricted"), registry: registry(), log: () => {} };
   const blobs = new FsBlobStore();
-  const max = Number(s("max") ?? 5), per = Number(s("per") ?? 3);
-  const maxPasses = b("loop") ? Number(s("passes") ?? 4) : 1;
+  const max = Number(s("max") ?? 5), per = Number(s("per") ?? 3), parallel = Math.max(1, Number(s("parallel") ?? 3));
+  const passCeiling = b("loop") ? Number(s("passes") ?? 12) : 1;
+  const budgetUsd = s("budget") ? Number(s("budget")) : Infinity;
   const agentModel = getModel(s("agent-model") ?? "haiku-4-5");
   const useAgent = !b("scripted") && hasKeyFor(agentModel);
-  let fetched = 0, spent = 0, stop = "";
+  let fetched = 0, spent = 0, stop = "", quiet = 0;
   // bootstrap: if the graph has no subject yet, seed it with a web search on the name
   {
     const g0 = await loadGraph(inv.id);
@@ -515,57 +561,86 @@ async function runLoop(id?: string) {
       } catch (e) { console.log(`bootstrap failed: ${String((e as Error).message).slice(0, 90)}`); }
     }
   }
-  // the capability arsenal runs alongside the web missions: seeds + whatever the graph now holds (accounts, orgs)
-  const pivotPass = async (label: string) => {
+  // the capability arsenal runs alongside the web missions: seeds, whatever the graph holds (accounts, orgs), and
+  // the entities the dispatcher just decided matter (ring ≤ 1 gap entities) — so pivots serve the Question too
+  const pivotPass = async (label: string, extra: PivotSeed[] = []) => {
     if (b("no-pivot")) return;
     const g = await loadGraph(inv.id);
     const q = (await openQuestions(inv.id))[0];
-    const seeds = [...seedPivots(inv.seed), ...harvestPivots(g, q?.subject_entity_id ?? subjectOf(g, { subject_entity_id: null }, inv.seed.name)?.id ?? null)];
+    const seeds = [...seedPivots(inv.seed), ...harvestPivots(g, q?.subject_entity_id ?? subjectOf(g, { subject_entity_id: null }, inv.seed.name)?.id ?? null), ...extra];
     if (!seeds.length) return;
     console.log(`\n  capabilities (${label}): ${seeds.length} pivot seeds …`);
     const sum = await runPivots(inv.id, seeds, { ctx, maxRuns: Number(s("pivot-max") ?? 30), log: (m) => console.log(m) });
     if (sum.sources) { console.log(`  → ${sum.sources} sources · ${sum.claims} claims · ${sum.discovered.length} pivots discovered`); await rebuildCmd(inv.id); }
   };
   await pivotPass("bootstrap");
-  for (let pass = 1; pass <= maxPasses && !stop; pass++) {
-   if (maxPasses > 1) console.log(`\n════ pass ${pass}/${maxPasses} ════`);
-   const before = await investigationStats(inv.id);
-   await dispatch(inv.id);
-   const missions = await proposedMissions(inv.id, max);
-   if (!missions.length) { stop = "no open gaps — the question's indicators are satisfied"; break; }
-   console.log(`\nrunning top ${missions.length} missions (${per} pages each) …`);
-   for (const m of missions) {
-    await setMissionState(m.id, "running");
-    console.log(`
-▸ ${m.objective}`);
+  const stability = Number(((await openQuestions(inv.id))[0]?.stop_rule as { stability_actions?: number } | undefined)?.stability_actions ?? 2);
+  for (let pass = 1; pass <= passCeiling && !stop; pass++) {
+    if (passCeiling > 1) console.log(`\n════ pass ${pass}/${passCeiling} · spent $${spent.toFixed(2)} ════`);
+    const before = await investigationStats(inv.id);
+    const gBefore = await loadGraph(inv.id);
+    const drafts = (await dispatch(inv.id)) ?? [];
+    const missions = await proposedMissions(inv.id, max);
+    if (!missions.length) { stop = "no open gaps — the question's indicators are satisfied"; break; }
+    console.log(`\nrunning top ${missions.length} missions (${per} pages each${useAgent && parallel > 1 ? `, ${parallel} in parallel` : ""}) …`);
     if (useAgent) {
-      const res = await runAgentMission(inv, ctx, blobs, m, agentModel, per);
-      spent += res.usd; fetched += res.trail.length;
-      await setMissionState(m.id, "done", res.verdict, res.trail);
-      console.log(`   → ${res.verdict}: contributed ${res.contributed} claims from ${res.trail.length} pages · $${res.usd.toFixed(3)}`);
-    } else {
-      const query0 = m.frontier[0] ?? ""; let got = 0; const trail: string[] = [];
-      try {
-        const res = await serpApiSearch(query0, { num: 8 }); spent += res.usd;
-        for (const h of res.hits.slice(0, per)) {
-          const existing = await findSourceByUrl(inv.id, h.url);
-          if (existing && existing.status !== "failed") continue;
-          const r = await ingestUrl(inv.id, ctx, blobs, h.url, null);
-          if (r.status === "fetched") { fetched++; got++; trail.push(h.url); if (r.sum) spent += r.sum.usd; }
+      let i = 0;
+      const worker = async () => {
+        while (i < missions.length) {
+          const m = missions[i++]!;
+          await setMissionState(m.id, "running");
+          console.log(`\n▸ ${m.objective}`);
+          try {
+            const res = await runAgentMission(inv, ctx, blobs, m, agentModel, per);
+            spent += res.usd; fetched += res.trail.length;
+            await setMissionState(m.id, "done", res.verdict, res.trail);
+            console.log(`   → ${res.verdict}: ${m.objective.slice(0, 60)} — contributed ${res.contributed} claims from ${res.trail.length} pages${res.proposed ? `, proposed ${res.proposed} missions` : ""} · $${res.usd.toFixed(3)}`);
+          } catch (e) {
+            await setMissionState(m.id, "abandoned", "error");
+            console.log(`   ✗ ${m.objective.slice(0, 60)} — ${String((e as Error).message).slice(0, 120)}`);
+          }
         }
-      } catch (e) { console.log(`   (search failed: ${String((e as Error).message).slice(0, 80)})`); }
-      await setMissionState(m.id, "done", got ? "found" : "no_trace", trail);
-      console.log(`   ${got} new pages ingested`);
+      };
+      await Promise.all(Array.from({ length: Math.min(parallel, missions.length) }, worker));
+    } else {
+      for (const m of missions) {
+        await setMissionState(m.id, "running");
+        console.log(`\n▸ ${m.objective}`);
+        const query0 = m.frontier[0] ?? ""; let got = 0; const trail: string[] = [];
+        try {
+          const res = await serpApiSearch(query0, { num: 8 }); spent += res.usd;
+          for (const h of res.hits.slice(0, per)) {
+            const existing = await findSourceByUrl(inv.id, h.url);
+            if (existing && existing.status !== "failed") continue;
+            const r = await ingestUrl(inv.id, ctx, blobs, h.url, null);
+            if (r.status === "fetched") { fetched++; got++; trail.push(h.url); if (r.sum) spent += r.sum.usd; }
+          }
+        } catch (e) { console.log(`   (search failed: ${String((e as Error).message).slice(0, 80)})`); }
+        await setMissionState(m.id, "done", got ? "found" : "no_trace", trail);
+        console.log(`   ${got} new pages ingested`);
+      }
     }
+    console.log(`\n  rebuilding …`);
+    await rebuildCmd(inv.id);
+    // pivot on the entities the dispatcher ranked (ring ≤ 1) — the arsenal follows the Question's attention
+    const gapSeeds: PivotSeed[] = [];
+    for (const d of drafts.filter((x) => x.scope.ring <= 1).slice(0, 12)) {
+      const e = gBefore.entities.get(d.scope.entities[0] ?? "");
+      if (e && (e.type === "person" || e.type === "organization")) gapSeeds.push({ kind: e.type === "organization" ? "org" : "name", value: e.name, depth: 0, from: "dispatch" });
+    }
+    await pivotPass(`pass ${pass}`, gapSeeds);
+    try { await judge(inv.id); } catch (e) { console.log(`  (judge skipped: ${String((e as Error).message).slice(0, 100)})`); }
+    const after = await investigationStats(inv.id);
+    const gAfter = await loadGraph(inv.id);
+    const added = (Number(after.relations) + Number(after.attributes)) - (Number(before.relations) + Number(before.attributes));
+    const grew = gAfter.entities.size - gBefore.entities.size;
+    const material = added > 0 || grew > 0;
+    console.log(`\n  pass ${pass}: +${added} claims · ${grew >= 0 ? "+" : ""}${grew} entities · $${spent.toFixed(3)} total`);
+    quiet = material ? 0 : quiet + 1;
+    if (passCeiling > 1 && quiet >= stability) stop = `${quiet} pass${quiet === 1 ? "" : "es"} without new facts — the world has saturated (stability rule ${stability})`;
+    if (spent >= budgetUsd) stop = `budget ceiling $${budgetUsd} reached`;
   }
-   console.log(`\n  rebuilding …`);
-   await rebuildCmd(inv.id);
-   await pivotPass(`pass ${pass}`);
-   await judge(inv.id);
-   const after = await investigationStats(inv.id);
-   const added = (Number(after.relations) + Number(after.attributes)) - (Number(before.relations) + Number(before.attributes));
-   if (maxPasses > 1 && added <= 0) { stop = `pass ${pass} added no new facts — stable`; break; }
-  }
+  if (!stop && passCeiling > 1) stop = `pass ceiling ${passCeiling} reached (owner ceiling; the question is not yet saturated)`;
   console.log(`\n── done ── ${fetched} pages · $${spent.toFixed(3)}${stop ? `\nstopped: ${stop}` : ""}`);
   console.log(`wg dossier ${short(inv.id)} "${inv.seed.name}"`);
 }
