@@ -205,3 +205,23 @@ compared); a `read_url` that can fetch PDFs/archives explicitly; the old `wg run
   with backoff (8 attempts, up to ~8 min). Under a longer outage the run fails and must be restarted from the app.
 - Small thing seen: the agent sometimes passes a made-up hypothesis id ("h2") — accept ordinals or list ids in
   the board output more prominently.
+
+## 10. 2026-09-03 — the investigation is a conversation (the maintainer's redesign)
+His steers after using the app: it felt like an aggregator (top layer), the graph was messy (6 nodes for one
+company), tool logs are unreadable, and he wants to *continue* an investigation. His design:
+- **One chat per investigation.** The user sends messages; the investigator works and talks back through a
+  `send_message` tool (as many messages as the work deserves); `finish` only ends the turn. No report artifact —
+  the conversation is the report. "Clear history" = fresh LLM context (graph + notebook remain).
+- **Rhythm:** collect → when happy, consolidate (rebuild, duplicates, groups) → assess what's missing/important →
+  continue. Not hygiene-after-every-batch (the seed-A run spent a third of its budget on that).
+- **Groups are the agent's call, no rules:** `group_entities` / `ungroup`; the graph draws a group as one node
+  that explodes on tap and collapses via a chip.
+- **Ask-the-graph** stays a sharp read-only analyst and is also a tool the investigator can call (`ask_graph`).
+- **Activity feed** in words ("Reading pappers.fr", "Joining X and Y", "Grouping as …"), collapsible, instead of
+  a tool log. Answers are short (answer line, ≤4 evidence bullets, one Unknown line, ids as tappable chips).
+Built (`0f27a05`+): tables `sessions` / `messages` / `entity_groups` (0020); `runToolLoop` resumes a transcript;
+`wg chat <inv> "message" [--fresh]`; server `/api/chat`, `/api/messages`, groups in `/api/graph`; app = Chat + Graph.
+Observed on the first turn: the agent went straight to work instead of answering a "quick one" — prompt now says
+answer first, in proportion, then work. Watch whether it sends enough messages mid-run.
+Still open: B3 (the analyst layer proper: lead finding, timeline, contradictions); brand-vs-legal-name merge
+(Acorn / Acorn Capital) is left to the agent via same_as; `wg agent` (one-shot) still exists alongside chat.
