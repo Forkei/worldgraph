@@ -83,7 +83,7 @@ async function callAnthropic(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmRes
   };
   if (m.thinking) params.thinking = { type: "adaptive" };
   // stream + finalMessage: large max_tokens require streaming to avoid HTTP timeouts
-  const res = await anthropicClient.messages.stream(params as never).finalMessage();
+  const res = await withRetry("anthropic", () => anthropicClient!.messages.stream(params as never).finalMessage());
   if (res.stop_reason === "refusal") throw new Error("refusal: " + JSON.stringify(res.stop_details ?? {}));
   const text = res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
   const u = res.usage;
@@ -137,6 +137,25 @@ async function callGemini(m: ModelSpec, req: LlmRequest): Promise<Omit<LlmResult
 export const hasKeyFor = (m: ModelSpec): boolean => (m.provider === "anthropic" ? !!env.anthropicKey : !!env.geminiKey);
 
 // ---- tool-use loop (for mission agents): multi-turn Anthropic tool use ----
+/** Transient failures (DNS blips, connection resets, 429/5xx, overloads) are retried with backoff instead of
+ *  killing a multi-hour run: up to 8 attempts, 5s → 2 min, roughly 8 minutes of outage survived. */
+const TRANSIENT = /ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|fetch failed|Connection error|overloaded|rate limit|429|5\d\d/i;
+export async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 8): Promise<T> {
+  let wait = 5000;
+  for (let i = 1; ; i++) {
+    try { return await fn(); }
+    catch (e) {
+      const msg = String((e as Error).message ?? e);
+      const status = (e as { status?: number }).status;
+      const transient = TRANSIENT.test(msg) || status === 429 || (status != null && status >= 500) || status === undefined && /error/i.test(msg) && !/invalid|schema|400|401|403|404/i.test(msg);
+      if (!transient || i >= attempts) throw e;
+      console.error(`   (${label}: ${msg.slice(0, 80)} — retry ${i}/${attempts - 1} in ${Math.round(wait / 1000)}s)`);
+      await new Promise((r) => setTimeout(r, wait));
+      wait = Math.min(120_000, wait * 2);
+    }
+  }
+}
+
 export interface ToolDef { name: string; description: string; input_schema: Record<string, unknown> }
 export interface ToolLoopResult { finalText: string; usd: number; steps: number; toolCalls: number; transcript: { role: string; text: string }[] }
 
@@ -167,12 +186,12 @@ export async function runToolLoop(
     return mm;
   });
   for (; step < maxSteps; step++) {
-    const res = await anthropicClient.messages.stream({
+    const res = await withRetry("anthropic tool loop", () => anthropicClient!.messages.stream({
       model: m.id, max_tokens: 8000,
       system: [{ type: "text", text: opts.system, cache_control: { type: "ephemeral" } }],
       tools: cachedTools as never, messages: cacheLast(messages) as never,
       ...(m.thinking ? { thinking: { type: "adaptive" } } : {}),
-    } as never).finalMessage();
+    } as never).finalMessage());
     const u = res.usage;
     usd += costOf(m, (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) * 1.25 + (u.cache_read_input_tokens ?? 0) * 0.1, u.output_tokens ?? 0);
     const say = res.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
