@@ -62,8 +62,9 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   }
   const overrides = new Map((await query<{ pattern: string; tier: string }>(`SELECT pattern, tier FROM source_tiers`)).map((r) => [r.pattern, r.tier]));
   const srcFacts = new Map<string, SourceFacts & { domain: string | null; publisher_name: string | null }>();
-  for (const srow of await query<{ id: string; domain: string | null; publisher_kind: string | null; publisher_name: string | null }>(`SELECT id, domain, publisher_kind, publisher_name FROM sources WHERE investigation_id=$1`, [investigationId])) {
-    const ov = [...overrides.entries()].find(([p]) => srow.domain && (srow.domain === p || srow.domain.endsWith("." + p)))?.[1] ?? null;
+  for (const srow of await query<{ id: string; domain: string | null; publisher_kind: string | null; publisher_name: string | null; tier: string | null; tier_kind: string | null }>(`SELECT id, domain, publisher_kind, publisher_name, tier, tier_kind FROM sources WHERE investigation_id=$1`, [investigationId])) {
+    // owner override by domain pattern wins; otherwise a capability source carries its adapter's declared grade (research/17)
+    const ov = [...overrides.entries()].find(([p]) => srow.domain && (srow.domain === p || srow.domain.endsWith("." + p)))?.[1] ?? (srow.tier_kind === "capability" ? srow.tier : null);
     srcFacts.set(srow.id, { publisher_kind: srow.publisher_kind, publisher_entity_id: null, override_tier: ov, domain: srow.domain, publisher_name: srow.publisher_name });
   }
   const rows = await query<ClaimRow>(

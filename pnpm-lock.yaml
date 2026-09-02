@@ -123,6 +123,9 @@ importers:
 
   packages/plan:
     dependencies:
+      '@worldgraph/acquire':
+        specifier: workspace:*
+        version: link:../acquire
       '@worldgraph/core':
         specifier: workspace:*
         version: link:../core

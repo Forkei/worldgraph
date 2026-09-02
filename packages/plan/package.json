@@ -8,6 +8,7 @@
     "@worldgraph/core": "workspace:*",
     "@worldgraph/db": "workspace:*",
     "@worldgraph/knowledge": "workspace:*",
-    "@worldgraph/extract": "workspace:*"
+    "@worldgraph/extract": "workspace:*",
+    "@worldgraph/acquire": "workspace:*"
   }
 }
