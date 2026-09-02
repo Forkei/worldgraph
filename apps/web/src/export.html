@@ -1,0 +1,220 @@
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#eef1f5; --panel:#ffffff; --panel2:#f5f7fa; --ink:#14202e; --muted:#5b6878; --line:#d6dce6; --accent:#c9781a; --accent-ink:#fff;
+  --person:#1f8a8a; --organization:#6b4fd8; --account:#c9781a; --place:#3f9d4e; --document:#7a8595; --legal_matter:#d0473b; --transaction:#b0642d; --other:#8b95a3;
+  --established:#1f8a4c; --corroborated:#5aa33a; --single_source:#8f9aab; --unverified:#c4ccd8; --disputed:#d0473b;
+  --shadow:0 12px 40px rgba(20,32,46,.14);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f141b; --panel:#161c25; --panel2:#1c2330; --ink:#e6ebf2; --muted:#8c98a8; --line:#273140; --accent:#e39a3b; --accent-ink:#14202e;
+  --person:#3fb3b3; --organization:#9d86f0; --account:#e39a3b; --place:#5fc06e; --document:#8f9bab; --legal_matter:#ef6b5e; --transaction:#d18a55; --other:#7c8798;
+  --established:#37c46f; --corroborated:#8fd15a; --single_source:#7d8899; --unverified:#3a4556; --disputed:#ef6b5e;
+  --shadow:0 12px 40px rgba(0,0,0,.5);
+}}
+:root[data-theme="dark"]{
+  --bg:#0f141b; --panel:#161c25; --panel2:#1c2330; --ink:#e6ebf2; --muted:#8c98a8; --line:#273140; --accent:#e39a3b; --accent-ink:#14202e;
+  --person:#3fb3b3; --organization:#9d86f0; --account:#e39a3b; --place:#5fc06e; --document:#8f9bab; --legal_matter:#ef6b5e; --transaction:#d18a55; --other:#7c8798;
+  --established:#37c46f; --corroborated:#8fd15a; --single_source:#7d8899; --unverified:#3a4556; --disputed:#ef6b5e;
+  --shadow:0 12px 40px rgba(0,0,0,.5);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 "IBM Plex Sans",-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace}
+#stage{position:fixed;inset:0}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#head{position:absolute;top:0;left:0;right:0;z-index:5;padding:12px 16px 20px;background:linear-gradient(var(--bg) 55%,transparent);pointer-events:none;display:flex;flex-direction:column;gap:4px}
+#head>*{pointer-events:auto}
+#head .eyebrow{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:500}
+#head h1{margin:0;font-size:22px;font-weight:600;letter-spacing:-.01em;text-wrap:balance;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+#head h1 small{font-size:12.5px;color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
+#head .goal{font-size:12.5px;color:var(--muted);max-width:62ch}
+#tools{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
+#tools input{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px;width:min(280px,60vw)}
+#tools input:focus{outline:2px solid var(--accent);outline-offset:1px}
+button{font:inherit;cursor:pointer;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 11px}
+button:hover{border-color:var(--accent)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:500}
+#legend{position:absolute;left:12px;bottom:12px;z-index:5;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 11px;font-size:11px;box-shadow:var(--shadow);display:grid;grid-template-columns:auto auto;gap:2px 16px}
+#legend .r{display:flex;align-items:center;gap:6px;color:var(--muted);white-space:nowrap}
+#legend .dot{width:9px;height:9px;border-radius:50%;flex:none}
+#legend .ln{width:16px;border-top:3px solid;flex:none}
+#legend b{grid-column:1/-1;color:var(--ink);font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;margin-top:4px;font-weight:500}
+#hint{position:absolute;right:12px;bottom:12px;z-index:5;font-size:11px;color:var(--muted)}
+
+/* dossier: right drawer on wide screens, bottom sheet on phones */
+#drawer{position:absolute;z-index:8;background:var(--panel);box-shadow:var(--shadow);overflow-y:auto;overscroll-behavior:contain;transition:transform .22s ease;padding:16px 16px 48px}
+@media (min-width:760px){#drawer{right:0;top:0;bottom:0;width:min(440px,60vw);border-left:1px solid var(--line);transform:translateX(102%)}#drawer.open{transform:none}}
+@media (max-width:759px){#drawer{left:0;right:0;bottom:0;max-height:72vh;border-top:1px solid var(--line);border-radius:14px 14px 0 0;transform:translateY(102%)}#drawer.open{transform:none}}
+#drawer .x{position:absolute;top:10px;right:12px;background:none;border:none;color:var(--muted);font-size:24px;padding:0 4px;line-height:1}
+#drawer h2{margin:0 36px 2px 0;font-size:19px;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
+#drawer .type{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:6px;display:flex;gap:8px;align-items:center}
+#drawer .type .sw{width:9px;height:9px;border-radius:50%;display:inline-block}
+#drawer .keys{font-size:11.5px;color:var(--muted);margin-bottom:6px;word-break:break-all}
+.grp{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:16px 0 4px;border-bottom:1px solid var(--line);padding-bottom:4px;font-weight:500}
+.row{padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent)}
+.row .h{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.row .o{font-weight:500;cursor:pointer;text-align:right}
+.row .o:hover{color:var(--accent)}
+.row .p{color:var(--muted);font-size:11.5px}
+.row .m{font-size:11px;color:var(--muted);margin-top:4px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.g{font-size:9.5px;font-weight:600;padding:1px 6px;border-radius:5px;color:#fff;letter-spacing:.02em}
+.q{font-size:10.5px;color:var(--muted);background:var(--panel2);padding:1px 6px;border-radius:5px}
+.why{font-size:10.5px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0}
+.ev{margin-top:6px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;font-size:12px}
+.ev .c{padding:6px 0;border-top:1px solid var(--line)}
+.ev .c:first-child{border-top:none;padding-top:0}
+.ev .src{color:var(--muted);font-size:10.5px;display:flex;gap:6px;flex-wrap:wrap}
+.ev blockquote{margin:3px 0;padding-left:8px;border-left:2px solid var(--accent);color:var(--ink);font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:11.5px;white-space:pre-wrap;word-break:break-word}
+.ev a{color:var(--accent);font-size:10.5px;word-break:break-all}
+
+/* findings sheet */
+#findings{position:absolute;z-index:9;left:50%;top:50%;transform:translate(-50%,-50%);width:min(560px,92vw);max-height:80vh;overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:18px 18px 22px}
+#findings[hidden]{display:none}
+#findings h2{margin:0 0 4px;font-size:18px}
+#findings .sub{color:var(--muted);font-size:12px;margin-bottom:10px}
+#findings .fe{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:baseline;padding:6px 0;border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent);cursor:pointer}
+#findings .fe:hover .n{color:var(--accent)}
+#findings .fe .n{font-weight:500}
+#findings .fe .t{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+#findings .fe .c{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+#findings .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:8px 0 12px;font-variant-numeric:tabular-nums}
+#findings .stats b{color:var(--ink);font-weight:600}
+@media (prefers-reduced-motion:reduce){#drawer{transition:none}}
+</style>
+
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="head">
+    <div class="eyebrow">WorldGraph · case file</div>
+    <h1 id="title"></h1>
+    <div class="goal" id="goal"></div>
+    <div id="tools">
+      <input id="find" placeholder="Find an entity…" autocomplete="off">
+      <button id="btn-findings">Findings</button>
+      <button id="btn-fit">Fit</button>
+    </div>
+  </div>
+  <div id="legend"></div>
+  <div id="hint">tap a node · drag to pan · pinch or scroll to zoom</div>
+  <div id="drawer"><button class="x" id="close" aria-label="close">×</button><div id="dbody"></div></div>
+  <div id="findings" hidden></div>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById("data").textContent);
+const $ = (s) => document.querySelector(s);
+const cssv = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || "#888";
+const TYPES = ["person","organization","account","place","document","legal_matter","transaction"];
+const GRADES = ["established","corroborated","single_source","unverified","disputed"];
+const GLABEL = {established:"established",corroborated:"corroborated",single_source:"single source",unverified:"unverified",disputed:"disputed"};
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const typeVar = (t) => "--" + (TYPES.includes(t) ? t : "other");
+
+const byEnt = new Map(D.entities.map((e) => [e.id, e]));
+const W = () => innerWidth, H = () => innerHeight;
+const nodes = D.entities.map((e) => ({ ...e, x: W()/2 + (Math.random()-.5)*600, y: H()/2 + (Math.random()-.5)*600, vx:0, vy:0, r: 5 + Math.min(22, Math.sqrt(+e.claims || 1) * 3) }));
+const nmap = new Map(nodes.map((n) => [n.id, n]));
+const links = D.links.map((l) => ({ ...l, a: nmap.get(l.s), b: nmap.get(l.o) })).filter((l) => l.a && l.b);
+const edgesBy = new Map(); for (const l of links) for (const k of [l.s, l.o]) (edgesBy.get(k) || edgesBy.set(k, []).get(k)).push(l);
+const attrsBy = new Map(); for (const a of D.attrs) (attrsBy.get(a.e) || attrsBy.set(a.e, []).get(a.e)).push(a);
+const subject = nodes.find((n) => n.id === D.subject) || [...nodes].sort((a, b) => b.claims - a.claims)[0];
+
+$("#title").innerHTML = `${esc(D.seed)} <small>${nodes.length} entities · ${links.length} links · ${D.attrs.length} attributes · ${D.sources} sources</small>`;
+$("#goal").textContent = D.goal;
+
+/* ---------- force layout on canvas ---------- */
+const canvas = $("#c"), ctx = canvas.getContext("2d");
+let scale = 1, ox = 0, oy = 0, dragging = null, selected = null, ptrs = new Map(), last = null, pinch = 0, moved = false, down = null, hot = 300;
+function resize(){ const dpr = Math.min(2, devicePixelRatio || 1); canvas.width = W()*dpr; canvas.height = H()*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); }
+addEventListener("resize", resize); resize();
+function step(){
+  if (!nodes.length || hot <= 0) return; hot--;
+  for (let i = 0; i < nodes.length; i++) { const a = nodes[i];
+    for (let j = i+1; j < nodes.length; j++) { const b = nodes[j]; let dx = a.x-b.x, dy = a.y-b.y, d2 = dx*dx+dy*dy || 1, d = Math.sqrt(d2); const rep = (a.r+b.r)*60/d2; a.vx += dx/d*rep; a.vy += dy/d*rep; b.vx -= dx/d*rep; b.vy -= dy/d*rep; }
+    a.vx += (W()/2-a.x)*0.0012; a.vy += (H()/2-a.y)*0.0012; }
+  for (const l of links) { const dx = l.b.x-l.a.x, dy = l.b.y-l.a.y, d = Math.hypot(dx,dy) || 1, f = (d-110)*0.02; l.a.vx += dx/d*f; l.a.vy += dy/d*f; l.b.vx -= dx/d*f; l.b.vy -= dy/d*f; }
+  for (const n of nodes) { if (n === dragging) continue; n.x += n.vx *= 0.85; n.y += n.vy *= 0.85; }
+}
+function draw(){
+  step(); ctx.clearRect(0,0,W(),H()); ctx.save(); ctx.translate(ox,oy); ctx.scale(scale,scale);
+  for (const l of links) { const hl = selected && (l.s === selected || l.o === selected), dim = selected && !hl;
+    ctx.strokeStyle = cssv("--" + (l.grade || "single_source")); ctx.globalAlpha = dim ? 0.05 : (l.grade === "unverified" ? 0.5 : 0.85);
+    ctx.lineWidth = (hl ? 2.2 : 1) * (l.grade === "established" ? 2.2 : l.grade === "corroborated" ? 1.5 : 1);
+    ctx.setLineDash(l.grade === "disputed" ? [4,3] : l.derived ? [2,3] : []);
+    ctx.beginPath(); ctx.moveTo(l.a.x,l.a.y); ctx.lineTo(l.b.x,l.b.y); ctx.stroke(); }
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+  for (const n of nodes) { const hl = selected && (n.id === selected || (edgesBy.get(selected)||[]).some((l) => l.s === n.id || l.o === n.id)), dim = selected && !hl;
+    ctx.globalAlpha = dim ? 0.22 : 1; ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,7); ctx.fillStyle = cssv(typeVar(n.type)); ctx.fill();
+    if (n.id === selected) { ctx.lineWidth = 3; ctx.strokeStyle = cssv("--ink"); ctx.stroke(); }
+    if (scale > 0.45 && (hl || n.r > 9 || !selected)) { ctx.globalAlpha = dim ? 0.3 : 1; ctx.fillStyle = cssv("--ink"); ctx.font = (n.id === selected ? "600 13px" : "500 11px") + ' "IBM Plex Sans",sans-serif'; ctx.textAlign = "center"; const t = (n.name||"").length > 26 ? n.name.slice(0,25)+"…" : n.name; ctx.fillText(t, n.x, n.y + n.r + 12); } }
+  ctx.restore(); requestAnimationFrame(draw);
+}
+draw();
+const toW = (px,py) => ({ x:(px-ox)/scale, y:(py-oy)/scale });
+function pick(px,py){ const w = toW(px,py); let best = null, bd = 1e9; for (const n of nodes) { const d = Math.hypot(n.x-w.x, n.y-w.y); if (d < n.r+8 && d < bd) { bd = d; best = n; } } return best; }
+canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); moved = false; if (ptrs.size === 1) { down = pick(e.clientX,e.clientY); if (down) dragging = down; last = {x:e.clientX,y:e.clientY}; } if (ptrs.size === 2) { const p = [...ptrs.values()]; pinch = Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y); dragging = null; } });
+canvas.addEventListener("pointermove", (e) => { if (!ptrs.has(e.pointerId)) return; ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (ptrs.size === 2) { const p = [...ptrs.values()], d = Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y), cx = (p[0].x+p[1].x)/2, cy = (p[0].y+p[1].y)/2; if (pinch) { const f = d/pinch, w = toW(cx,cy); scale = Math.max(.15, Math.min(4, scale*f)); ox = cx-w.x*scale; oy = cy-w.y*scale; } pinch = d; moved = true; return; } if (!last) return; const dx = e.clientX-last.x, dy = e.clientY-last.y; if (Math.abs(dx)+Math.abs(dy) > 3) moved = true; if (dragging) { const w = toW(e.clientX,e.clientY); dragging.x = w.x; dragging.y = w.y; dragging.vx = dragging.vy = 0; hot = Math.max(hot, 60); } else { ox += dx; oy += dy; } last = {x:e.clientX,y:e.clientY}; });
+canvas.addEventListener("pointerup", (e) => { ptrs.delete(e.pointerId); if (!moved && down) openNode(down.id); else if (!moved && !down) { selected = null; closeDrawer(); } dragging = null; last = null; down = null; if (ptrs.size < 2) pinch = 0; });
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); const f = Math.exp(-e.deltaY*0.0015), w = toW(e.clientX,e.clientY); scale = Math.max(.15, Math.min(4, scale*f)); ox = e.clientX-w.x*scale; oy = e.clientY-w.y*scale; }, { passive:false });
+function fit(){ if (!nodes.length) return; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for (const n of nodes) { x0=Math.min(x0,n.x); y0=Math.min(y0,n.y); x1=Math.max(x1,n.x); y1=Math.max(y1,n.y); } const pad = 60; scale = Math.max(.15, Math.min(2, Math.min((W()-pad*2)/((x1-x0)||1), (H()-pad*2-150)/((y1-y0)||1)))); ox = W()/2 - (x0+x1)/2*scale; oy = H()/2 + 40 - (y0+y1)/2*scale; }
+function focusNode(id){ const n = nmap.get(id); if (!n) return; scale = Math.max(scale, 1); ox = W()/2 - n.x*scale; oy = H()/2 - n.y*scale; }
+$("#btn-fit").onclick = fit;
+setTimeout(fit, 1200);
+
+/* ---------- dossier ---------- */
+const gchip = (g) => `<span class="g" style="background:${cssv("--" + (g || "single_source"))}">${GLABEL[g] || g}</span>`;
+const qstr = (q) => { if (!q) return ""; const k = Object.entries(q); return k.length ? k.map(([a,b]) => `${a}: ${b}`).join(" · ") : ""; };
+const dates = (l) => l.vf && l.vt ? `${l.vf.slice(0,7)} → ${l.vt.slice(0,7)}` : l.vf ? `${l.vf.slice(0,7)} →` : l.vt ? `→ ${l.vt.slice(0,7)}` : l.dl ? "@" + l.dl : "";
+const evHtml = (kind, id) => { const ev = (D.evidence[kind + ":" + id] || []); if (!ev.length) return `<div class="ev">no recorded provenance</div>`;
+  return `<div class="ev">` + ev.map((c) => `<div class="c"><div class="src"><span>${esc(c.domain || "")}</span>${c.pk ? `<span>[${esc(c.pk)}]</span>` : ""}${c.at ? `<span>${esc(c.at)}</span>` : ""}</div><blockquote>${esc((c.quote || "").slice(0, 260))}</blockquote>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.url.slice(0, 70))}</a>` : ""}</div>`).join("") + `</div>`; };
+function openNode(id){
+  selected = id; const n = byEnt.get(id); if (!n) return;
+  const out = (edgesBy.get(id) || []).filter((l) => l.s === id).sort((a,b) => GRADES.indexOf(a.grade) - GRADES.indexOf(b.grade));
+  const inc = (edgesBy.get(id) || []).filter((l) => l.o === id).sort((a,b) => GRADES.indexOf(a.grade) - GRADES.indexOf(b.grade));
+  const at = attrsBy.get(id) || [];
+  let h = `<h2>${esc(n.name)}</h2><div class="type"><span class="sw" style="background:${cssv(typeVar(n.type))}"></span>${esc(n.type)}${n.kind ? " · " + esc(n.kind) : ""} · ${n.claims} claims</div>`;
+  const keys = n.keys && Object.keys(n.keys).length ? Object.entries(n.keys).map(([k,v]) => `${k}=${[].concat(v).join(",")}`).join("  ") : "";
+  if (keys) h += `<div class="keys mono">${esc(keys)}</div>`;
+  const pred = (l) => `${esc(l.p)}${l.ps ? ` <span class="q">${esc(l.ps.replace(/^candidate:/, ""))}</span>` : ""}`;
+  if (at.length) { h += `<div class="grp">attributes (${at.length})</div>`; for (const a of at) h += `<div class="row"><div class="h"><span>${esc(a.key)}${a.ks ? ` <span class="q">${esc(a.ks.replace(/^candidate:/, ""))}</span>` : ""} = <b class="mono">${esc(a.value)}</b></span></div><div class="m">${gchip(a.grade)}<span>${a.rel}${a.cred} · ${a.origins} origin${a.origins == 1 ? "" : "s"}</span>${a.contested ? '<span class="q" style="color:var(--disputed)">contested</span>' : ''} <button class="why" data-k="attribute" data-id="${a.id}">evidence</button></div></div>`; }
+  if (out.length) { h += `<div class="grp">links out (${out.length})</div>`; for (const l of out) { const o = byEnt.get(l.o); h += `<div class="row"><div class="h"><span class="p">${pred(l)}</span><span class="o" data-go="${l.o}">${esc(o?.name || "?")}</span></div><div class="m">${gchip(l.grade)}<span>${l.rel}${l.cred} · ${l.origins}o/${l.ec}c</span>${dates(l) ? `<span class="q">${dates(l)}</span>` : ""}${qstr(l.q) ? `<span class="q">${esc(qstr(l.q))}</span>` : ""} <button class="why" data-k="link" data-id="${l.id}">evidence</button></div></div>`; } }
+  if (inc.length) { h += `<div class="grp">links in (${inc.length})</div>`; for (const l of inc) { const sN = byEnt.get(l.s); h += `<div class="row"><div class="h"><span class="o" data-go="${l.s}" style="text-align:left">${esc(sN?.name || "?")}</span><span class="p">${pred(l)}</span></div><div class="m">${gchip(l.grade)}${dates(l) ? `<span class="q">${dates(l)}</span>` : ""} <button class="why" data-k="link" data-id="${l.id}">evidence</button></div></div>`; } }
+  $("#dbody").innerHTML = h; $("#drawer").classList.add("open"); $("#drawer").scrollTop = 0;
+}
+function closeDrawer(){ $("#drawer").classList.remove("open"); }
+$("#close").onclick = () => { selected = null; closeDrawer(); };
+$("#dbody").addEventListener("click", (e) => {
+  const go = e.target.closest("[data-go]"); if (go) { openNode(go.dataset.go); focusNode(go.dataset.go); return; }
+  const w = e.target.closest(".why"); if (!w) return;
+  if (w.nextElementSibling && w.nextElementSibling.classList.contains("ev")) { w.nextElementSibling.remove(); return; }
+  w.insertAdjacentHTML("afterend", evHtml(w.dataset.k, w.dataset.id));
+});
+
+/* ---------- findings ---------- */
+const typeOrder = (t) => TYPES.indexOf(t) < 0 ? 99 : TYPES.indexOf(t);
+function showFindings(){
+  const f = $("#findings");
+  const top = [...nodes].filter((n) => n.claims >= 2 || n.type === "person" || n.type === "organization").sort((a,b) => b.claims - a.claims).slice(0, 40);
+  const counts = {}; for (const n of nodes) counts[n.type] = (counts[n.type] || 0) + 1;
+  const gr = {}; for (const l of links) gr[l.grade] = (gr[l.grade] || 0) + 1;
+  f.innerHTML = `<h2>${esc(D.seed)}</h2><div class="sub">${esc(D.goal)}</div>
+    <div class="stats">${Object.entries(counts).sort((a,b) => typeOrder(a[0]) - typeOrder(b[0])).map(([t,c]) => `<span><b>${c}</b> ${esc(t)}</span>`).join("")}</div>
+    <div class="stats">${GRADES.filter((g) => gr[g]).map((g) => `<span><b>${gr[g]}</b> ${GLABEL[g]}</span>`).join("")}</div>
+    <div class="grp">most-evidenced entities</div>` + top.map((n) => `<div class="fe" data-go="${n.id}"><span class="t" style="color:${cssv(typeVar(n.type))}">${esc(n.type)}</span><span class="n">${esc(n.name)}</span><span class="c">${n.claims} claims</span></div>`).join("") +
+    `<div style="margin-top:14px;text-align:right"><button id="fclose">Close</button></div>`;
+  f.hidden = false;
+  f.querySelector("#fclose").onclick = () => { f.hidden = true; };
+  f.querySelectorAll("[data-go]").forEach((el) => el.onclick = () => { f.hidden = true; openNode(el.dataset.go); focusNode(el.dataset.go); });
+}
+$("#btn-findings").onclick = showFindings;
+$("#find").addEventListener("keydown", (e) => { if (e.key !== "Enter") return; const q = e.target.value.trim().toLowerCase(); if (!q) return; const n = nodes.find((x) => x.name.toLowerCase() === q) || nodes.find((x) => x.name.toLowerCase().includes(q)); if (n) { openNode(n.id); focusNode(n.id); } });
+
+$("#legend").innerHTML = "<b>entity</b>" + TYPES.filter((t) => nodes.some((n) => n.type === t)).map((t) => `<div class="r"><span class="dot" style="background:${cssv("--" + t)}"></span>${t.replace("_"," ")}</div>`).join("") + "<b>evidence</b>" + GRADES.map((g) => `<div class="r"><span class="ln" style="border-color:${cssv("--" + g)}"></span>${GLABEL[g]}</div>`).join("");
+if (subject) { selected = subject.id; setTimeout(() => { openNode(subject.id); }, 400); }
+</script>

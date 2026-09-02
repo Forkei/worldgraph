@@ -9,6 +9,7 @@ import {
   type SourceRow,
 } from "@worldgraph/db";
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, CAP_RUNNERS, type SearchResult, type PivotKind } from "@worldgraph/acquire";
+import { exportHtml } from "./exportHtml.ts";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, buildClaims, type Side } from "@worldgraph/extract";
 import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers, runPivots, harvestPivots, seedPivots, type PivotSeed } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
@@ -24,7 +25,7 @@ const flags = parseArgs({
     policy: { type: "string", default: "unrestricted" }, limit: { type: "string", default: "30" }, random: { type: "boolean", default: false },
     rejected: { type: "boolean", default: false }, "no-firecrawl": { type: "boolean", default: false }, refetch: { type: "boolean", default: false }, type: { type: "string" }, note: { type: "string" },
     pred: { type: "string" }, at: { type: "string" }, "min-grade": { type: "string" }, on: { type: "string" }, hops: { type: "string" }, from: { type: "string" },
-    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
+    engine: { type: "string" }, num: { type: "string" }, fetch: { type: "string" }, q: { type: "string" }, max: { type: "string" }, per: { type: "string" }, "agent-model": { type: "string" }, scripted: { type: "boolean" }, loop: { type: "boolean" }, passes: { type: "string" }, n: { type: "string" }, "min-cos": { type: "string" }, json: { type: "boolean" }, mode: { type: "string" }, depth: { type: "string" }, only: { type: "string" }, skip: { type: "string" }, weak: { type: "boolean" }, dry: { type: "boolean" }, "no-rebuild": { type: "boolean" }, "no-pivot": { type: "boolean" }, "pivot-max": { type: "string" }, out: { type: "string" }, ring: { type: "string" }, parallel: { type: "string" }, budget: { type: "string" },
   },
 }).values as Record<string, string | boolean | string[] | undefined>;
 
@@ -50,6 +51,7 @@ async function main() {
     case "capabilities": case "caps": return capabilitiesCmd();
     case "cap": return capCmd(sub, rest);
     case "pivot": return pivotCmd(sub ?? s("inv"), ...rest);
+    case "export-html": return exportHtmlCmd(sub ?? s("inv"));
     case "investigations": return investigations();
     case "stats": return stats(sub ?? s("inv"));
     case "claims": return claims(sub ?? s("inv"));
@@ -253,6 +255,18 @@ async function capCmd(id?: string, args: string[] = []) {
   for (const e of r.edges.slice(0, 10)) console.log(`  → ${e.subject}  —${e.predicate}→  ${e.object}${e.at ? `  (${e.at})` : ""}${e.value ? `  =${e.value}` : ""}`);
   for (const a of r.attributes.slice(0, 8)) console.log(`  · ${a.entity}: ${a.key} = ${a.value}`);
   if (r.pivots.length) console.log(`\n  pivots: ${r.pivots.slice(0, 15).map((pv) => `${pv.kind}:${pv.value}${pv.weak ? "~" : ""}`).join("  ")}`);
+}
+
+// `wg export-html <inv> [--out file]` — standalone shareable case-file page (graph + dossiers + evidence).
+async function exportHtmlCmd(id?: string) {
+  const inv = id ? await getInvestigation(id) : null;
+  if (!inv) return fail("wg export-html <inv> [--out file.html]");
+  const g = await loadGraph(inv.id);
+  const q = (await openQuestions(inv.id))[0];
+  const subj = subjectOf(g, q ?? { subject_entity_id: null }, inv.seed.name);
+  const out = s("out") ?? `${inv.seed.name.replace(/[^a-z0-9.-]+/gi, "_")}.html`;
+  const r = await exportHtml(inv, out, subj?.id ?? null);
+  console.log(`wrote ${out}: ${r.entities} entities · ${r.links} links · ${r.attrs} attributes · evidence for ${r.evidence} facts`);
 }
 
 // The pivot engine (HANDOFF B1): chain capabilities from typed seeds, write results into the graph, rebuild.
