@@ -131,7 +131,7 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
         <label>Kind<select id="f-kind"><option>person</option><option>organization</option><option>domain</option></select></label>
         <label>Ceiling ($)<input id="f-ceiling" type="number" inputmode="decimal" value="3" min="0.5" step="0.5"></label>
       </div>
-      <label>What do you want to know?<textarea id="f-goal" rows="3" placeholder="Learn everything about … who runs it, what it is, related people and companies, anything suspicious."></textarea></label>
+      <label>What do you want to know? (optional — default is everything)<textarea id="f-goal" rows="3" placeholder="Leave empty to learn everything: who, what, the people and companies around it, anything suspicious."></textarea></label>
       <label>A starting URL (optional)<input id="f-url" placeholder="https://"></label>
       <button class="primary" id="f-go">Create and start the investigator</button>
       <div class="log" id="new-log"></div>
@@ -212,10 +212,10 @@ async function loadHome() {
 /* ---------- new ---------- */
 $("#f-go").onclick = () => {
   const seed = $("#f-seed").value.trim(), goal = $("#f-goal").value.trim(), kind = $("#f-kind").value, url = $("#f-url").value.trim(), ceiling = $("#f-ceiling").value;
-  if (!seed || !goal) { alert("Give a subject and a goal."); return; }
+  if (!seed) { alert("Give a subject."); return; }
   const log = $("#new-log"); log.textContent = "";
   let created = null;
-  sse("/api/create", { seed, kind, goal, url: url || undefined }, (line) => { const m = /investigation ([0-9a-f]+) created/.exec(line); if (m) created = m[1]; appendLog(log, line); }, async () => {
+  sse("/api/create", { seed, kind, goal: goal || undefined, url: url || undefined }, (line) => { const m = /investigation ([0-9a-f]+) created/.exec(line); if (m) created = m[1]; appendLog(log, line); }, async () => {
     if (!created) { appendLog(log, "— could not create —"); return; }
     const list = await api("/api/investigations"); const inv = list.find((i) => i.id.startsWith(created));
     if (!inv) return;

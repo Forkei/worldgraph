@@ -136,6 +136,13 @@ async function main() {
   }
 }
 
+/** No goal given: the investigation is "learn everything about it", phrased for the kind of subject. */
+function defaultGoal(kind: string, seed: string): string {
+  if (kind === "domain") return `Learn everything about ${seed}: what it is and does, who owns and operates it, the people and organizations behind it, its hosting and related domains, its history, and any legitimacy or scam signals.`;
+  if (kind === "organization") return `Learn everything about ${seed}: legal identity and registrations, ownership and control, leadership and staff, what it does and how it makes money, its web and infrastructure footprint, litigation and sanctions, history and reputation.`;
+  return `Learn everything about ${seed}: who they are, where they are, what they do and have done (roles, organizations, education), the people and organizations around them, their online presence and public records, and anything notable or contradictory.`;
+}
+
 async function investigate() {
   const model = getModel(s("model") ?? DEFAULT_MODEL);
   if (!hasKeyFor(model)) fail(`no API key for ${model.label}`);
@@ -148,8 +155,9 @@ async function investigate() {
   let inv = s("inv") ? await getInvestigation(s("inv")!) : null;
   if (s("inv") && !inv) fail(`investigation ${s("inv")} not found`);
   if (!inv) {
-    if (!s("seed") || !s("goal")) fail("--seed and --goal are required for a new investigation");
-    inv = await createInvestigation({ title: s("title") ?? `${s("seed")} — ${s("goal")!.slice(0, 60)}`, seed: { kind: s("kind") ?? "person", name: s("seed")!, hints: {} }, goal_text: s("goal")!, policy: policy.name });
+    if (!s("seed")) fail("--seed is required for a new investigation (--goal is optional: the default is to learn everything)");
+    const goal = s("goal") ?? defaultGoal(s("kind") ?? "person", s("seed")!);
+    inv = await createInvestigation({ title: s("title") ?? `${s("seed")} — ${goal.slice(0, 60)}`, seed: { kind: s("kind") ?? "person", name: s("seed")!, hints: {} }, goal_text: goal, policy: policy.name });
     await audit({ investigation_id: inv.id, actor: "cli", action: "investigation.create", detail: { seed: inv.seed, goal: inv.goal_text, policy: policy.name } });
     await recordDecision(inv.id, { actor: "human", kind: "scope", subject: { seed: inv.seed, policy: policy.name }, rationale: `seed "${s("seed")}" (${s("kind") ?? "person"}) · goal: ${inv.goal_text} · ${urlList.length} starting URLs · policy ${policy.name}` });
     console.log(`investigation ${short(inv.id)} created: ${inv.title}`);

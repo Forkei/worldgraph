@@ -68,7 +68,8 @@ const server = createServer(async (req, res) => {
 
     if (p === "/api/create" && req.method === "POST") {
       const b = await readBody(req);
-      const args = ["investigate", "--seed", String(b.seed ?? ""), "--kind", String(b.kind ?? "person"), "--goal", String(b.goal ?? "")];
+      const args = ["investigate", "--seed", String(b.seed ?? ""), "--kind", String(b.kind ?? "person")];
+      if (b.goal) args.push("--goal", String(b.goal));
       if (b.url) args.push("--url", String(b.url));
       return stream(res, args);
     }
