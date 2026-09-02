@@ -174,7 +174,12 @@ export async function usernameAccounts(username: string, opts: { concurrency?: n
     try {
       const body = await getText(target, { rateKey: new URL(target).host, minIntervalMs: 300, timeoutMs: 12_000 });
       return { ...h, catchAll: checkSite(h.site, 200, body, control) === "exists" };
-    } catch { return { ...h, catchAll: false }; }
+    } catch (e) {
+      // the control could not be checked: a 404 on the control is the good case (the site really distinguishes
+      // accounts); any other failure leaves the hit unconfirmed, and an unconfirmed profile is not a fact
+      const status = Number(String((e as Error).message).match(/\s(\d{3}):/)?.[1] ?? 0);
+      return { ...h, catchAll: status !== 404 };
+    }
   });
   let dropped = 0;
   for (const h of confirmed) {
