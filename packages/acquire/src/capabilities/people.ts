@@ -5,7 +5,7 @@
 // directly since core/config only exposes the base set.
 import { createHash } from "node:crypto";
 import { getJson, getJsonOrNull, getText } from "./http.ts";
-import { type CapabilityResult, type CapProvenance, type CapPivot, type GatedCapability, dedupePivots, emptyResult } from "./types.ts";
+import { type CapabilityResult, type CapProvenance, type CapPivot, type GatedCapability, aggregateRecurring, dedupePivots, emptyResult } from "./types.ts";
 
 const now = () => new Date().toISOString();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -65,6 +65,7 @@ export function parseFec(j: FecResponse, name: string): CapabilityResult {
     const loc = [d.contributor_city, d.contributor_state].filter(Boolean).join(", ");
     if (loc && !seenLoc.has(loc)) { seenLoc.add(loc); r.attributes.push({ entity: name, key: "location", value: loc }); }
   }
+  r.edges = aggregateRecurring(r.edges); // biweekly payroll deductions → one edge with count/total/span
   return r;
 }
 
