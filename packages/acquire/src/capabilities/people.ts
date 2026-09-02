@@ -182,6 +182,7 @@ export async function usernameAccounts(username: string, opts: { concurrency?: n
     }
   });
   let dropped = 0;
+  r.entities.push({ type: "username", name: username });
   for (const h of confirmed) {
     if (h.catchAll) { dropped++; continue; }
     r.edges.push({ subject: username, predicate: "has_account_on", object: h.site.name, qualifiers: h.site.cat ? { category: h.site.cat } : undefined });

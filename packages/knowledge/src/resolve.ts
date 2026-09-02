@@ -10,6 +10,8 @@ export interface Provisional {
   keys: Record<string, string[]>;          // hard identity keys
   neighbors: Set<string>;                  // ids of linked provisional entities (context)
   claim_count: number;
+  /** other names this record is known by (mention surfaces + `aliases` attribute values, e.g. from an agent's same_as) */
+  aliases?: string[];
 }
 export interface Decision { a_id: string; b_id: string; verdict: "same" | "not_same" | "related"; related_kind?: string | null }
 export interface PairScore { a: string; b: string; score: number; p: number; features: Record<string, number | string | boolean>; verdict: "same" | "hypothesis" | "not_same" | "related" | "none"; related_kind?: string }
@@ -124,7 +126,12 @@ export function scorePair(a: Provisional, b: Provisional, idf: Map<string, numbe
   if (hk === "conflict") return { a: a.id, b: b.id, score: -99, p: 0, features: f, verdict: "not_same" };
   if (hk === "match") w += 15;
   if (numericIdConflict(a.name_norm, b.name_norm)) { f.numeric_id_conflict = true; return { a: a.id, b: b.id, score: -99, p: 0, features: f, verdict: "not_same" }; }
-  if (a.kind && b.kind && a.kind !== b.kind) { f.kind_conflict = true; w -= 3; }
+  // kinds conflict only where they are structural (an agency vs a company, a city vs a country); person kinds are
+  // extractor colour ("forum_user" vs "user") and must not keep two records of one person apart
+  if (a.kind && b.kind && a.kind !== b.kind && a.type !== "person") { f.kind_conflict = true; w -= 3; }
+  // an alias match: one record's known-as list names the other (a same_as with a quote, a page saying "aka ...")
+  const aliasHit = (x: Provisional, y: Provisional) => (x.aliases ?? []).some((al) => al.toLowerCase() === y.name.toLowerCase());
+  if (aliasHit(a, b) || aliasHit(b, a)) { f.alias_match = true; w += 8; }
   const jw = jaroWinkler(a.name_norm, b.name_norm); f.jw = Number(jw.toFixed(3));
   const ta = tokens(a.name_norm), tb = tokens(b.name_norm);
   const shared = ta.filter((t) => tb.includes(t));
@@ -192,6 +199,15 @@ export function candidatePairs(ents: Provisional[], idf: Map<string, number>): [
       const compact = e.name_norm.replace(/\s/g, ""); if (compact.length >= 3 && compact.length <= 6) (byInit.get(compact) ?? byInit.set(compact, []).get(compact)!).push(e);
       for (const k of HARD_KEYS) for (const v of e.keys[k] ?? []) (byKey.get(`${k}:${v}`) ?? byKey.set(`${k}:${v}`, []).get(`${k}:${v}`)!).push(e);
     }
+    // containment: "kim" in "halokim", "alex" in "alexh" - a compact single-token name inside another name of the
+    // same type is a candidate for the judge (never a merge by itself). Bounded to keep it cheap.
+    const compactOf = (e: Provisional) => e.name_norm.replace(/ /g, "");
+    const shortOnes = group.filter((e) => compactOf(e).length >= 4 && compactOf(e).length <= 12 && !e.name_norm.includes(" "));
+    if (group.length <= 600) for (const a of shortOnes) { const ca = compactOf(a); for (const b of group) { if (a === b) continue; const cb = compactOf(b); if (cb.length > ca.length && cb.includes(ca)) push(a, b); } }
+    // alias blocking: a record whose alias list names another record's name
+    const byName = new Map<string, Provisional[]>();
+    for (const e of group) (byName.get(e.name_norm) ?? byName.set(e.name_norm, []).get(e.name_norm)!).push(e);
+    for (const e of group) for (const al of e.aliases ?? []) { const k = al.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); for (const o of byName.get(k) ?? []) if (o !== e) push(e, o); }
     for (const bucket of [...byTok.values(), ...byInit.values(), ...byKey.values()]) {
       if (bucket.length > 60) continue;                                   // hub token — not informative
       for (let i = 0; i < bucket.length; i++) for (let j = i + 1; j < bucket.length; j++) push(bucket[i]!, bucket[j]!);
@@ -237,8 +253,9 @@ export function resolve(ents: Provisional[], decisions: Decision[]): ResolveResu
   };
   const merges: PairScore[] = [], related: PairScore[] = [], guarded: PairScore[] = [];
   let hypotheses: PairScore[] = [];
-  // 1. decisions first (records win)
-  for (const d of decisions) if (d.verdict === "same") union(d.a_id, d.b_id);
+  // 1. decisions first (records win) — only between records that exist in THIS build (provisional ids can change
+  //    when identity keys change; a stale decision must not drag an unknown id into the union-find)
+  for (const d of decisions) if (d.verdict === "same" && parent.has(d.a_id) && parent.has(d.b_id)) union(d.a_id, d.b_id);
   // 1b. keyless organization mentions attach to the keyed record of the same name ONLY when that name is
   //     unambiguous here (exactly one keyed record). Two keyed records with the same name (different domains) make
   //     the keyless mentions ambiguous: they stay their own record and the judge gets a hypothesis for each side.

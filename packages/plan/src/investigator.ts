@@ -278,7 +278,16 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
         const g = await graph(); const type = findEnt(g, S("name_a"))?.type ?? "person";
         const out: ExtractionOutput = { mentions: [mention("m1", S("name_a"), type)], relations: [], attributes: [{ entity: "m1", key: "aliases", key_parent: "", value: S("name_b"), datatype: "string", quote: S("quote"), attributed_to: "", confidence: 1, attribute_class: "public", ...noTime, derivation: "agent_same_as" }], page: { published_at: "", summary: "", publisher_name: "", publisher_kind: "" } };
         await assertClaims(s.src, out, "same_as");
-        return `recorded: "${S("name_a")}" also known as "${S("name_b")}" with your quote; rebuild + judge to merge`;
+        // when both are already graph entities, your quote-backed assertion is a judgment: record it as a reversible
+        // 'same' decision between their member records (like the judge does), so the next rebuild merges them
+        const ea = findEnt(g, S("name_a")), eb = findEnt(g, S("name_b"));
+        let n = 0;
+        if (ea && eb && ea.id !== eb.id && ea.type === eb.type) {
+          const ma = await query<{ provisional_id: string }>(`SELECT provisional_id FROM entity_members WHERE entity_id=$1`, [ea.id]), mb = await query<{ provisional_id: string }>(`SELECT provisional_id FROM entity_members WHERE entity_id=$1`, [eb.id]);
+          for (const x of ma) for (const y of mb) { let pa = x.provisional_id, pb = y.provisional_id; if (pa > pb) [pa, pb] = [pb, pa]; const nid = uuidv7(); await query(`INSERT INTO resolution_decisions (id, investigation_id, a_id, b_id, verdict, method, note) VALUES ($1,$2,$3,$4,'same','llm',$5)`, [nid, inv.id, pa, pb, `investigator same_as: "${S("quote").slice(0, 160)}" (${S("url")})`.slice(0, 900)]); await query(`UPDATE resolution_decisions SET superseded_by=$1 WHERE investigation_id=$2 AND a_id=$3 AND b_id=$4 AND superseded_by IS NULL AND id<>$1`, [nid, inv.id, pa, pb]); n++; }
+          await recordDecision(inv.id, { actor: "llm", kind: "merge", subject: { a: ea.id, b: eb.id }, rationale: `same_as ${ea.name} = ${eb.name}: "${S("quote").slice(0, 200)}" (${S("url")})`, reversible_by: "wg unmerge / wg decide" });
+        }
+        return `recorded: "${S("name_a")}" also known as "${S("name_b")}" with your quote${n ? `; ${n} same-entity decision${n === 1 ? "" : "s"} recorded - rebuild to merge` : "; rebuild + judge to merge"}`;
       }
       case "not_same_as": {
         const g = await graph(); const a = findEnt(g, S("a")), b = findEnt(g, S("b")); if (!a || !b) return "one of the two is not in the graph";

@@ -87,6 +87,7 @@ export async function runPivots(inv: string, seeds: PivotSeed[], opts: PivotOpts
     const jobs: Job[] = [];
     for (const seed of wave) {
       if (seed.weak && !opts.includeWeak) continue;
+      if (seed.kind === "name" && !seed.value.trim().includes(" ")) { runs.push({ capability: "-", kind: seed.kind, value: seed.value, depth: seed.depth!, status: "skipped", claims: 0, pivots: 0, ms: 0, note: "single-token name: too ambiguous for name lookups (use the handle instead)" }); continue; }
       for (const runner of runnersFor(seed.kind)) {
         if (!allowed(runner)) continue;
         const key = `${runner.id}|${seed.kind}|${norm(seed.kind, seed.value)}`;

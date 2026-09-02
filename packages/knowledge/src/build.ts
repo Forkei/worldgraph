@@ -114,7 +114,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
     claimEnts.push({ claim_id: r.id, claim_kind: "relation", role: "subject", entity_id: src }, { claim_id: r.id, claim_kind: "relation", role: "object", entity_id: dst });
   }
   const attrMap = new Map<string, string>();
-  for (const a of attr) { const e = entityOf(a.entity!, a.id, a.asserted_at, a.source_id); attrMap.set(a.id, e); claimEnts.push({ claim_id: a.id, claim_kind: "attribute", role: "entity", entity_id: e }); }
+  for (const a of attr) { const e = entityOf(a.entity!, a.id, a.asserted_at, a.source_id); attrMap.set(a.id, e); claimEnts.push({ claim_id: a.id, claim_kind: "attribute", role: "entity", entity_id: e }); if (a.key === "aliases" && a.value) ents.get(e)!.aliases.add(String(a.value).trim()); }
 
   // 1a. resolution: provisional (exact-name) entities → clusters, using decisions (records) and scores
   const neighborsOf = new Map<string, Set<string>>();
@@ -122,6 +122,7 @@ export async function rebuild(investigationId: string, opts: { rules?: Rule[]; c
   const provisional: Provisional[] = [...ents.values()].map((e) => ({
     id: e.id, type: e.type, kind: e.kind, name: [...e.names.entries()].sort((a, b) => b[1] - a[1])[0]![0], name_norm: nameNorm([...e.names.entries()].sort((a, b) => b[1] - a[1])[0]![0], e.type) || "unnamed",
     keys: Object.fromEntries(Object.entries(e.keys).map(([k, v]) => [k, [...v]])), neighbors: neighborsOf.get(e.id) ?? new Set(), claim_count: e.claims.size,
+    aliases: [...e.aliases],
   }));
   const decisions = (await query<Decision & { a_id: string; b_id: string }>(`SELECT a_id, b_id, verdict, related_kind FROM resolution_decisions WHERE investigation_id=$1 AND superseded_by IS NULL`, [investigationId]));
   const res = resolveEntities(provisional, decisions);
