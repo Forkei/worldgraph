@@ -28,3 +28,4 @@ tools/
 # ML artifacts (regenerable from the graph)
 ml/records.jsonl
 ml/triberta-min/
+.env-secrets

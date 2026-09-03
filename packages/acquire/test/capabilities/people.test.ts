@@ -1,6 +1,6 @@
 // Cluster B parse tests — fixtures are real response shapes (research/17, live 2026-09-01).
 import { describe, it, expect } from "vitest";
-import { parseGravatar, parseFec, parseOpenAlex, checkSite, parseHibpAccount, parseHunter, parseWikitree, GATED_PEOPLE, type WmnSite } from "../../src/capabilities/people.ts";
+import { parseGravatar, parseFec, parseOpenAlex, checkSite, parseHibpAccount, parseHunter, parseWikitree, parseDehashed, GATED_PEOPLE, type WmnSite } from "../../src/capabilities/people.ts";
 
 describe("B3 gravatar", () => {
   it("emits person, location, accounts (username pivots) and url pivots", () => {
@@ -94,6 +94,37 @@ describe("B9 relatives (wikitree, shape assumed)", () => {
     expect(r.edges.find((e) => e.predicate === "spouse_of")?.object).toBe("John Doe");
     expect(r.edges.find((e) => e.predicate === "parent_of")?.object).toBe("Kid Doe");
     expect(r.pivots.map((p) => p.value)).toEqual(expect.arrayContaining(["John Doe", "Kid Doe"]));
+  });
+});
+
+describe("B3b dehashed (breach records)", () => {
+  const resp = {
+    total: 2,
+    entries: [
+      { database_name: "Collection1", email: "jsmith@gmail.com", username: "jaysmith", password: "hunter2", ip_address: "1.2.3.4" },
+      { database_name: "SomeForum", email: ["alt@proton.me"], username: ["jaysmith"], password: "hunter2", phone: "+15551234567" },
+    ],
+  };
+  it("links co-occurring identifiers as edges + pivots, anchored on the query", () => {
+    const r = parseDehashed(resp, "jsmith@gmail.com", "email");
+    expect(r.entities.find((e) => e.type === "email")?.name).toBe("jsmith@gmail.com");
+    expect(r.edges.find((e) => e.predicate === "co_leaked_username")?.object).toBe("jaysmith");
+    expect(r.edges.find((e) => e.predicate === "co_leaked_email")?.object).toBe("alt@proton.me");
+    expect(r.edges.find((e) => e.predicate === "co_leaked_phone")?.object).toBe("+15551234567");
+    expect(r.pivots.map((p) => p.value)).toEqual(expect.arrayContaining(["jaysmith", "alt@proton.me", "+15551234567"]));
+    expect(r.edges.filter((e) => e.predicate === "breached_in").map((e) => e.object)).toEqual(expect.arrayContaining(["Collection1", "SomeForum"]));
+  });
+  it("detects password reuse without storing the plaintext", () => {
+    const r = parseDehashed(resp, "jsmith@gmail.com", "email");
+    const reuse = r.attributes.find((a) => a.key === "password_reuse");
+    expect(reuse).toBeTruthy();
+    expect(reuse!.value).toMatch(/in 2 records/);
+    expect(JSON.stringify(r)).not.toContain("hunter2"); // plaintext never leaves the parser
+  });
+  it("returns a note and nothing else on an empty result", () => {
+    const r = parseDehashed({ total: 0, entries: [] }, "nobody@nowhere.tld", "email");
+    expect(r.edges).toHaveLength(0);
+    expect(r.provenance.note).toMatch(/no breach records/i);
   });
 });
 

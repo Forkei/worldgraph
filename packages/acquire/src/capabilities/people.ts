@@ -4,7 +4,7 @@
 // self-rate-limited; caching is orchestrated by the caller. Keys (Hunter, HIBP) are read from process.env
 // directly since core/config only exposes the base set.
 import { createHash } from "node:crypto";
-import { getJson, getJsonOrNull, getText } from "./http.ts";
+import { getJson, getJsonOrNull, getText, postJson } from "./http.ts";
 import { type CapabilityResult, type CapProvenance, type CapPivot, type GatedCapability, aggregateRecurring, dedupePivots, emptyResult } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -233,6 +233,78 @@ export async function hibpAccount(email: string): Promise<CapabilityResult> {
   const breaches = (await getJsonOrNull<HibpBreach[]>(url, { rateKey: "haveibeenpwned.com", minIntervalMs: 2000, headers: { "hibp-api-key": key } })) ?? [];
   const r = parseHibpAccount(breaches, email);
   r.provenance.url = url;
+  return r;
+}
+
+// ---------------------------------------------------------------------------
+// B3b. DeHashed — breach-record search (email/username/phone/name/domain → the co-occurring
+// identifiers in the same leaked row: the strongest cross-account pivot there is). Paid API.
+// We surface the LINKAGE, never the credential: plaintext passwords are reduced to a salted
+// short fingerprint so the engine can spot reuse across records without the value entering the graph.
+// Reading a queryable index only — the dump corpus is never fetched or stored (project rule).
+// ---------------------------------------------------------------------------
+interface DehashedEntry {
+  id?: string; email?: string | string[]; username?: string | string[]; password?: string | string[];
+  hashed_password?: string | string[]; name?: string | string[]; ip_address?: string | string[];
+  phone?: string | string[]; address?: string | string[]; database_name?: string;
+}
+interface DehashedResponse { entries?: DehashedEntry[] | null; total?: number; balance?: number }
+
+/** DeHashed fields can come back as a scalar or an array; normalise to a trimmed string list. */
+const dhList = (v?: string | string[]): string[] =>
+  (Array.isArray(v) ? v : v == null ? [] : [v]).map((s) => String(s).trim()).filter(Boolean);
+/** never store a password: a short salted fingerprint is enough to detect reuse across rows. */
+const pwFingerprint = (pw: string): string => "pw:" + createHash("sha256").update("wg-dh\0" + pw).digest("hex").slice(0, 12);
+
+const DH_FIELD: Record<string, string> = { email: "email", username: "username", phone: "phone", name: "name", domain: "domain" };
+
+export function parseDehashed(j: DehashedResponse | null, query: string, kind: string): CapabilityResult {
+  const prov: CapProvenance = { capability: "people.dehashed", source: "DeHashed", fetched_at: now(), grade: "C", tier: "spicy", note: "leaked-breach data, self-reported and unverified; credentials are fingerprinted, never stored" };
+  const r = emptyResult(prov);
+  // audit copy: keep the shape but scrub every credential — plaintext must never persist anywhere
+  const scrub = (e: DehashedEntry) => ({ ...e, password: e.password ? "[redacted]" : undefined, hashed_password: e.hashed_password ? "[redacted]" : undefined });
+  r.raw = { total: j?.total, sample: (j?.entries ?? []).slice(0, 3).map(scrub) };
+  const entries = j?.entries ?? [];
+  if (!entries.length) { prov.note = `no breach records for ${kind}:${query}`; return r; }
+  const subject = query;
+  // the query value is the anchor entity; its kind decides the entity type
+  if (kind === "email") r.entities.push({ type: "email", name: query });
+  else if (kind === "username") r.entities.push({ type: "username", name: query });
+  else if (kind === "name") r.entities.push({ type: "person", name: query });
+
+  const seenPw = new Map<string, number>();
+  for (const e of entries) {
+    const db = e.database_name?.trim() || "unknown breach";
+    const emails = dhList(e.email), users = dhList(e.username), phones = dhList(e.phone), names = dhList(e.name), ips = dhList(e.ip_address);
+    // every co-occurring identifier becomes an edge from the anchor + a pivot to chase
+    for (const v of emails) if (v.toLowerCase() !== subject.toLowerCase()) { r.edges.push({ subject, predicate: "co_leaked_email", object: v, qualifiers: { breach: db } }); r.pivots.push({ kind: "email", value: v }); }
+    for (const v of users) if (v.toLowerCase() !== subject.toLowerCase()) { r.edges.push({ subject, predicate: "co_leaked_username", object: v, qualifiers: { breach: db } }); r.pivots.push({ kind: "username", value: v }); }
+    for (const v of phones) { r.edges.push({ subject, predicate: "co_leaked_phone", object: v, qualifiers: { breach: db } }); r.pivots.push({ kind: "phone", value: v }); }
+    for (const v of names) { r.edges.push({ subject, predicate: "co_leaked_name", object: v, qualifiers: { breach: db } }); r.pivots.push({ kind: "name", value: v }); }
+    for (const v of ips) { r.attributes.push({ entity: subject, key: "leaked_ip", value: `${v} (${db})` }); r.pivots.push({ kind: "ip", value: v, weak: true }); }
+    r.edges.push({ subject, predicate: "breached_in", object: db });
+    for (const pw of dhList(e.password)) { const fp = pwFingerprint(pw); seenPw.set(fp, (seenPw.get(fp) ?? 0) + 1); }
+  }
+  // password reuse: a fingerprint seen in ≥2 rows means those accounts share a credential — a strong same-owner signal
+  for (const [fp, n] of seenPw) if (n >= 2) r.attributes.push({ entity: subject, key: "password_reuse", value: `${fp} in ${n} records (fingerprint only; plaintext never stored)` });
+  r.attributes.push({ entity: subject, key: "breach_records", value: String(j?.total ?? entries.length) });
+  r.pivots = dedupePivots(r.pivots);
+  return r;
+}
+
+/** kind ∈ email|username|phone|name|domain — builds the right DeHashed field query. */
+export async function dehashed(value: string, kind = "email"): Promise<CapabilityResult> {
+  const key = process.env.DEHASHED_API_KEY;
+  if (!key) throw new Error("people.dehashed needs DEHASHED_API_KEY (paid, ~$20/mo — includes API). No key = capability off.");
+  const field = DH_FIELD[kind] ?? "email";
+  const query = `${field}:${value}`;
+  const j = await postJson<DehashedResponse>(
+    "https://api.dehashed.com/v2/search",
+    { query, page: 1, size: 100, de_dupe: true },
+    { rateKey: "api.dehashed.com", minIntervalMs: 1200, timeoutMs: 30_000, headers: { "Dehashed-Api-Key": key, Accept: "application/json" } },
+  ).catch((e) => { throw new Error(`DeHashed: ${(e as Error).message}`); });
+  const r = parseDehashed(j, value, kind);
+  r.provenance.url = "https://api.dehashed.com/v2/search";
   return r;
 }
 

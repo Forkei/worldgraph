@@ -4,7 +4,7 @@
 // how many times the engine fires a noisy/slow runner in one invocation (WhatsMyName = 716 probes).
 import type { CapabilityResult, PivotKind } from "./types.ts";
 import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, webPrimitives } from "./domain.ts";
-import { gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives } from "./people.ts";
+import { gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives, dehashed } from "./people.ts";
 import { exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox } from "./media.ts";
 import { edgar, gleif, wikidata, nonprofit, usaspending, courtCases, companiesHouse, openCorporates, sanctions } from "./org.ts";
 
@@ -36,6 +36,7 @@ export const CAP_RUNNERS: CapRunner[] = [
   { id: "people.academic", consumes: ["name"], run: one(academic), auto: true },
   { id: "people.username", consumes: ["username"], run: (a) => usernameAccounts(a[0]!.replace(/^@/, "")), auto: true, maxPerRun: 3 },
   { id: "people.breach", consumes: ["email"], run: (a) => (a[0] ? hibpAccount(a[0]) : hibpCatalog()), auto: true },
+  { id: "people.dehashed", consumes: ["email", "username", "phone"], run: (a, kind) => dehashed(a.join(" "), kind ?? "email"), auto: true, maxPerRun: 6 },
   { id: "people.email_pattern", consumes: ["domain"], run: (a) => hunter(a[0]!), auto: true, maxPerRun: 3 },
   { id: "people.relatives", consumes: ["name"], run: one(relatives), auto: true },
   { id: "media.exif", consumes: ["image"], run: (a) => exif(a[0]!), auto: true },
