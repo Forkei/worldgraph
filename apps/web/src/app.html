@@ -312,30 +312,54 @@ function layoutGraph() {
   const route = (id) => memberOf.has(id) ? "g:" + memberOf.get(id) : id;
   const seen = new Set();
   links = G.links.map((l) => ({ ...l, s: route(l.s), o: route(l.o) })).filter((l) => l.s !== l.o).map((l) => ({ ...l, a: nmap.get(l.s), b: nmap.get(l.o) })).filter((l) => l.a && l.b && !seen.has(l.s + "|" + l.p + "|" + l.o) && seen.add(l.s + "|" + l.p + "|" + l.o));
+  const deg = new Map(); for (const l of links) { deg.set(l.a.id, (deg.get(l.a.id)||0)+1); deg.set(l.b.id, (deg.get(l.b.id)||0)+1); }
+  for (const n of nodes) { n.deg = deg.get(n.id) || 0; const base = n.type === "group" ? 8 : 5; n.r = base + Math.min(24, Math.sqrt(+n.claims || 1) * 1.8 + Math.sqrt(n.deg) * 2.4); }
   edgesBy = new Map(); for (const l of G.links) for (const k of [l.s, l.o]) (edgesBy.get(k) || edgesBy.set(k, []).get(k)).push(l);
   attrsBy = new Map(); for (const a of G.attrs) (attrsBy.get(a.e) || attrsBy.set(a.e, []).get(a.e)).push(a);
   $("#legend").innerHTML = TYPES.filter((t) => G.entities.some((n) => n.type === t)).map((t) => `<div class="r"><span class="dot" style="background:${cssv("--" + t)}"></span>${t.replace("_", " ")}</div>`).join("") + (groups.length ? `<div class="r"><span class="dot" style="background:var(--ink);opacity:.6"></span>group (tap to open)</div>` : "") + GRADES.slice(0, 3).map((g) => `<div class="r"><span class="ln" style="border-color:${cssv("--" + g)}"></span>${GLABEL[g]}</div>`).join("");
   $("#gchips").innerHTML = [...expanded].map((gid) => { const g = groups.find((x) => x.id === gid); return g ? `<button class="chip" data-collapse="${gid}">▣ ${esc(g.label)} ×</button>` : ""; }).join("");
   $("#gchips").querySelectorAll("[data-collapse]").forEach((b) => b.onclick = () => { expanded.delete(b.dataset.collapse); selected = null; closeSheet(); layoutGraph(); });
-  hot = 300; if (!old.size) setTimeout(fit, 900);
+  reheat(1); if (!old.size) setTimeout(fit, 900);
 }
 function revealEntity(id) { for (const g of groups) if (!expanded.has(g.id) && g.members.includes(id)) { expanded.add(g.id); layoutGraph(); } }
 
 /* ---------- canvas ---------- */
 const canvas = $("#c"), ctx = canvas.getContext("2d");
 const W = () => canvas.clientWidth || innerWidth, H = () => canvas.clientHeight || innerHeight;
-let scale = 1, ox = 0, oy = 0, dragging = null, selected = null, ptrs = new Map(), last = null, pinch = 0, moved = false, down = null, hot = 300;
+let scale = 1, ox = 0, oy = 0, dragging = null, selected = null, ptrs = new Map(), last = null, pinch = 0, moved = false, down = null;
+// force sim (d3-force style, Obsidian-like): alpha cools over ~300 ticks, then freezes; interaction reheats it
+let alpha = 0, alphaTarget = 0;
+const ALPHA_MIN = 0.0015, ALPHA_DECAY = 1 - Math.pow(ALPHA_MIN, 1/300), V_DECAY = 0.6;
+const CHARGE = 260, GRAVITY = 0.05, LINK_DIST = 42, LINK_STR = 1, COLLIDE_PAD = 5, GROUP_PULL = 0.06;
+function reheat(a = 1) { alpha = Math.max(alpha, a); }
 function resize() { const dpr = Math.min(2, devicePixelRatio || 1); canvas.width = W()*dpr; canvas.height = H()*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); }
 addEventListener("resize", resize); resize();
 function step() {
-  if (!nodes.length || hot <= 0) return; hot--;
+  if (!nodes.length || (alpha < ALPHA_MIN && alphaTarget === 0)) return;
+  alpha += (alphaTarget - alpha) * ALPHA_DECAY;
+  const cx = W()/2, cy = H()/2;
+  // charge: every node repels every other (∝ 1/d², d3 manyBody), hubs push a little harder; + mild gravity to centre
   for (let i = 0; i < nodes.length; i++) { const a = nodes[i];
-    for (let j = i+1; j < nodes.length; j++) { const b = nodes[j]; let dx = a.x-b.x, dy = a.y-b.y, d2 = dx*dx+dy*dy || 1, d = Math.sqrt(d2); const rep = (a.r+b.r)*60/d2; a.vx += dx/d*rep; a.vy += dy/d*rep; b.vx -= dx/d*rep; b.vy -= dy/d*rep; }
-    a.vx += (W()/2-a.x)*0.0012; a.vy += (H()/2-a.y)*0.0012; }
-  for (const l of links) { const dx = l.b.x-l.a.x, dy = l.b.y-l.a.y, d = Math.hypot(dx,dy) || 1, f = (d-100)*0.02; l.a.vx += dx/d*f; l.a.vy += dy/d*f; l.b.vx -= dx/d*f; l.b.vy -= dy/d*f; }
-  // members of an expanded group huddle together
-  for (const n of nodes) if (n.expandedGroup) for (const m of nodes) if (m !== n && m.expandedGroup === n.expandedGroup) { const dx = m.x-n.x, dy = m.y-n.y, d = Math.hypot(dx,dy) || 1, f = (d-70)*0.01; n.vx += dx/d*f; n.vy += dy/d*f; }
-  for (const n of nodes) { if (n === dragging) continue; n.x += n.vx *= 0.85; n.y += n.vy *= 0.85; }
+    for (let j = i+1; j < nodes.length; j++) { const b = nodes[j];
+      let dx = b.x-a.x, dy = b.y-a.y, d2 = dx*dx+dy*dy;
+      if (d2 < 1) { dx = Math.random()-.5; dy = Math.random()-.5; d2 = dx*dx+dy*dy+.01; }
+      const floor = (a.r+b.r)*(a.r+b.r)*0.25; if (d2 < floor) d2 = floor; // clamp so overlaps don't explode
+      const w = -CHARGE * (1 + (a.deg+b.deg)*0.03) * alpha / d2;
+      a.vx += dx*w; a.vy += dy*w; b.vx -= dx*w; b.vy -= dy*w; }
+    a.vx += (cx-a.x)*GRAVITY*alpha; a.vy += (cy-a.y)*GRAVITY*alpha; }
+  // links: springs to a rest length, weaker on hubs (d3 forceLink strength = 1/min-degree) so busy nodes aren't yanked
+  for (const l of links) { const a = l.a, b = l.b; let dx = b.x-a.x, dy = b.y-a.y, d = Math.hypot(dx,dy) || 1;
+    const target = LINK_DIST + a.r + b.r, ls = LINK_STR / Math.min(a.deg||1, b.deg||1);
+    const f = (d-target)/d * alpha * ls, fx = dx*f, fy = dy*f;
+    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy; }
+  // exploded-group members keep a loose cluster
+  for (const n of nodes) if (n.expandedGroup) for (const m of nodes) if (m !== n && m.expandedGroup === n.expandedGroup) { const dx = m.x-n.x, dy = m.y-n.y, d = Math.hypot(dx,dy)||1, f = (d-60)/d*GROUP_PULL*alpha; n.vx += dx*f; n.vy += dy*f; }
+  // integrate + friction (d3 velocityDecay)
+  for (const n of nodes) { if (n === dragging) { n.vx = n.vy = 0; continue; } n.vx *= V_DECAY; n.vy *= V_DECAY; n.x += n.vx; n.y += n.vy; }
+  // collision: no two nodes overlap (this is most of the tidiness), 2 relaxation passes
+  for (let it = 0; it < 2; it++) for (let i = 0; i < nodes.length; i++) { const a = nodes[i];
+    for (let j = i+1; j < nodes.length; j++) { const b = nodes[j]; let dx = b.x-a.x, dy = b.y-a.y, d = Math.hypot(dx,dy)||1; const min = a.r+b.r+COLLIDE_PAD;
+      if (d < min) { const p = (min-d)/d*0.5, px = dx*p, py = dy*p; if (a !== dragging) { a.x -= px; a.y -= py; } if (b !== dragging) { b.x += px; b.y += py; } } } }
 }
 function draw() {
   if ($("#s-inv").classList.contains("on") && $("#p-graph").classList.contains("on")) {
@@ -371,7 +395,7 @@ let haloHits = [];
 function pickHalo(px,py) { const w = toWld(px,py); return haloHits.find((h) => Math.abs(w.x - h.x) < h.w / 2 + 6 && Math.abs(w.y - h.y) < 16) || null; }
 function pick(px,py) { const w = toWld(px,py); let best = null, bd = 1e9; for (const n of nodes) { const d = Math.hypot(n.x-w.x, n.y-w.y); if (d < n.r+10 && d < bd) { bd = d; best = n; } } return best; }
 canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); moved = false; if (ptrs.size === 1) { down = pick(e.clientX,e.clientY); if (down) dragging = down; last = {x:e.clientX,y:e.clientY}; } if (ptrs.size === 2) { const p = [...ptrs.values()]; pinch = Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y); dragging = null; } });
-canvas.addEventListener("pointermove", (e) => { if (!ptrs.has(e.pointerId)) return; ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (ptrs.size === 2) { const p = [...ptrs.values()], d = Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y), cx = (p[0].x+p[1].x)/2, cy = (p[0].y+p[1].y)/2; if (pinch) { const f = d/pinch, w = toWld(cx,cy), r = canvas.getBoundingClientRect(); scale = Math.max(.15, Math.min(4, scale*f)); ox = cx-r.left-w.x*scale; oy = cy-r.top-w.y*scale; } pinch = d; moved = true; return; } if (!last) return; const dx = e.clientX-last.x, dy = e.clientY-last.y; if (Math.abs(dx)+Math.abs(dy) > 3) moved = true; if (dragging) { const w = toWld(e.clientX,e.clientY); dragging.x = w.x; dragging.y = w.y; dragging.vx = dragging.vy = 0; hot = Math.max(hot, 60); } else { ox += dx; oy += dy; } last = {x:e.clientX,y:e.clientY}; });
+canvas.addEventListener("pointermove", (e) => { if (!ptrs.has(e.pointerId)) return; ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (ptrs.size === 2) { const p = [...ptrs.values()], d = Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y), cx = (p[0].x+p[1].x)/2, cy = (p[0].y+p[1].y)/2; if (pinch) { const f = d/pinch, w = toWld(cx,cy), r = canvas.getBoundingClientRect(); scale = Math.max(.15, Math.min(4, scale*f)); ox = cx-r.left-w.x*scale; oy = cy-r.top-w.y*scale; } pinch = d; moved = true; return; } if (!last) return; const dx = e.clientX-last.x, dy = e.clientY-last.y; if (Math.abs(dx)+Math.abs(dy) > 3) moved = true; if (dragging) { const w = toWld(e.clientX,e.clientY); dragging.x = w.x; dragging.y = w.y; dragging.vx = dragging.vy = 0; reheat(0.4); } else { ox += dx; oy += dy; } last = {x:e.clientX,y:e.clientY}; });
 canvas.addEventListener("pointerup", (e) => { ptrs.delete(e.pointerId); const halo = !moved && !down ? pickHalo(e.clientX, e.clientY) : null; if (halo) { expanded.delete(halo.gid); selected = null; closeSheet(); layoutGraph(); dragging = null; last = null; down = null; return; } if (!moved && down) { if (down.type === "group") { expanded.add(down.group.id); selected = null; closeSheet(); layoutGraph(); } else openNode(down.id); } else if (!moved && !down) { selected = null; closeSheet(); } dragging = null; last = null; down = null; if (ptrs.size < 2) pinch = 0; });
 canvas.addEventListener("wheel", (e) => { e.preventDefault(); const f = Math.exp(-e.deltaY*0.0015), w = toWld(e.clientX,e.clientY), r = canvas.getBoundingClientRect(); scale = Math.max(.15, Math.min(4, scale*f)); ox = e.clientX-r.left-w.x*scale; oy = e.clientY-r.top-w.y*scale; }, { passive:false });
 function fit() { if (!nodes.length) return; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for (const n of nodes) { x0=Math.min(x0,n.x); y0=Math.min(y0,n.y); x1=Math.max(x1,n.x); y1=Math.max(y1,n.y); } const pad = 50; scale = Math.max(.15, Math.min(2, Math.min((W()-pad*2)/((x1-x0)||1), (H()-pad*2-60)/((y1-y0)||1)))); ox = W()/2 - (x0+x1)/2*scale; oy = H()/2 + 20 - (y0+y1)/2*scale; }
