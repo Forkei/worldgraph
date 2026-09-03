@@ -4,3 +4,4 @@ export * from "./prompt.ts";
 export * from "./providers.ts";
 export * from "./extractor.ts";
 export * from "./judge.ts";
+export * from "./vision.ts";

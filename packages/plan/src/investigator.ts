@@ -6,7 +6,7 @@
 // the transcript is trimmed as it grows (providers.runToolLoop).
 import { uuidv7, type ExtractionOutput, type RelationClaim, type AttributeClaim } from "@worldgraph/core";
 import { query, findSourceByUrl, findSourceByHash, insertSource, insertClaimsBatch, updateSourceStatus, setSourcePublisher, listCapabilities, getCachedSearch, putCachedSearch, type SourceRow, type InvestigationRow } from "@worldgraph/db";
-import { runToolLoop, extractClaimsOnly, buildClaims, promptVersion, type ExtractContext, type ModelSpec, type ToolDef } from "@worldgraph/extract";
+import { runToolLoop, extractClaimsOnly, buildClaims, promptVersion, lookAt, visionToText, fetchImage, hasVisionKey, type ExtractContext, type ModelSpec, type ToolDef } from "@worldgraph/extract";
 import { fetchUrl, sha256, blobKey, FsBlobStore, SEARCH_ENGINES, ENGINE_NAMES, CAP_RUNNERS, type SearchResult, type PivotKind } from "@worldgraph/acquire";
 import { loadGraph, ego, paths, timeline, contested, why, recordDecision, type Graph, type GEntity } from "@worldgraph/knowledge";
 import { computeGaps, buildMissions } from "./dispatch.ts";
@@ -23,6 +23,8 @@ export interface InvestigatorDeps {
   judge: () => Promise<string>;
   ceilingUsd?: number;
   maxSteps?: number;
+  /** the model used by the look_at (vision) tool; defaults to Gemini Flash */
+  visionModel?: ModelSpec;
   log?: (s: string) => void;
   trace?: (s: string) => void;
   /** "ask the graph": answer this question from the graph alone (read tools only), then finish */
@@ -111,6 +113,7 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
     { name: "search", description: `Web search. engine: ${ENGINE_NAMES.join("|")} (google default; exa is semantic). page: 1,2,3… — go past page 1. Operators (site:, inurl:, filetype:, "exact", -term, before:/after:, AROUND(n)) work as written; see consult_playbook("search/google operators"). Returns ranked hits with snippets; snippets are not evidence — read the page.`, input_schema: { type: "object", properties: { query: { type: "string" }, engine: { type: "string" }, page: { type: "integer" }, lang: { type: "string", description: "ISO-639 code, optional" } }, required: ["query"] } },
     { name: "read_url", description: "Fetch a page and extract candidate claims (numbered). Nothing enters the graph until you contribute. Also returns the page's own text head so you can judge it.", input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
     { name: "read_text", description: "Return a window of a fetched page's raw text (for reading legal pages, footers, lists the extractor skipped). from = character offset.", input_schema: { type: "object", properties: { url: { type: "string" }, from: { type: "integer" }, chars: { type: "integer" } }, required: ["url"] } },
+    { name: "look_at", description: "Look at an image (a photo URL — e.g. an 'image:' pivot from a profile or post). A vision model reads any text in it, describes the people (apparent age/role, NOT who they are), animals, objects, place cues (signs, landmarks, plates → geolocation) and time cues, and answers your question if you ask one. The image becomes a source with numbered candidate claims; contribute what is supported. Use it on the subject's own photos — it is where the brother, the dog, the town and the era come from. It does NOT identify faces; that is a separate tool.", input_schema: { type: "object", properties: { url: { type: "string" }, question: { type: "string" } }, required: ["url"] } },
     { name: "contribute", description: "Commit chosen candidate claims from a page you read. indices omitted = all. Only relevant, supported claims.", input_schema: { type: "object", properties: { url: { type: "string" }, indices: { type: "array", items: { type: "integer" } } }, required: ["url"] } },
     { name: "list_capabilities", description: "The connector arsenal: id, what it consumes (domain/email/username/name/org/ip/…), what it emits, grade, whether it is enabled (keyed).", input_schema: { type: "object", properties: {} } },
     { name: "run_capability", description: "Run one connector on one value (e.g. infra.rdap on a domain, people.username on a handle, org.wikidata on a name, org.court on an org). Cache-first. Its graded facts are written to the graph as a source you can retract; you get the summary and the new pivot values.", input_schema: { type: "object", properties: { id: { type: "string" }, value: { type: "string" }, refetch: { type: "boolean" } }, required: ["id", "value"] } },
@@ -183,6 +186,30 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
         if (!src?.text) return "not fetched yet — read_url first";
         const from = Math.max(0, Number(input.from ?? 0)), chars = Math.min(8000, Math.max(500, Number(input.chars ?? 4000)));
         return `[${from}..${Math.min(src.text.length, from + chars)} of ${src.text.length}]\n` + src.text.slice(from, from + chars);
+      }
+      case "look_at": {
+        if (!hasVisionKey()) return "vision is off (no GEMINI_API_KEY)";
+        const url = S("url"), question = input.question ? S("question") : undefined;
+        // an image is a source, keyed by url + question so a re-ask with a new question restages
+        const skey = question ? `${url}#q=${question.slice(0, 60)}` : url;
+        if (staged.has(skey)) return summarize(skey, staged.get(skey)!);
+        const existing = await findSourceByUrl(inv.id, skey);
+        if (existing?.status === "extracted" && !question) return `already looked at earlier — its facts are in the graph.\n${(existing.text ?? "").slice(0, 1200)}`;
+        let img: { buf: Buffer; contentType: string };
+        try { img = await fetchImage(url); } catch (e) { return "could not fetch the image: " + String((e as Error).message).slice(0, 160); }
+        let vis; try { vis = await lookAt({ bytes: img.buf, mime: img.contentType, question, model: deps.visionModel }); }
+        catch (e) { return "vision failed: " + String((e as Error).message).slice(0, 160); }
+        toolUsd += vis.usd;
+        const text = visionToText(vis.result, url);
+        const hash = sha256(text + skey);
+        const ext = (img.contentType.split("/")[1] ?? "jpg").replace("jpeg", "jpg");
+        const key = blobKey(inv.id, sha256(img.buf), ext); blobs.put(key, img.buf); // keep the pixels — IG CDN urls expire
+        const host = (() => { try { return new URL(url).hostname; } catch { return null; } })();
+        const source = existing ?? await insertSource({ investigation_id: inv.id, url: skey, final_url: url, domain: host, kind: "image", fetch_method: "http", http_status: 200, content_hash: hash, blob_key: key, text, link_table: [], title: vis.result.scene.slice(0, 200), published_at: null, lang: null, status: "fetched", error: null, meta: { vision: vis.result, by: "investigator", bytes: vis.bytes }, tier: null, tier_kind: null, snapshot_key: null, captured_at: new Date() });
+        const { claims, usd: u } = await extractClaimsOnly(ctx, source);
+        toolUsd += u;
+        staged.set(skey, { source, claims });
+        return `looked at ${src(url)} —\n${text}\n\n` + summarize(skey, { source, claims });
       }
       case "contribute": {
         const url = S("url"); const st = staged.get(url);
@@ -457,6 +484,7 @@ The graph's rules: every fact needs a source you read and a verbatim quote; a na
       case "search": return `Searching ${v("engine") || "google"}${Number(input.page ?? 1) > 1 ? " page " + input.page : ""}: ${v("query")}`;
       case "read_url": return `Reading ${host(v("url"))}`;
       case "read_text": return `Reading more of ${host(v("url"))}`;
+      case "look_at": return `Looking at a photo${v("question") ? " (" + v("question").slice(0, 40) + ")" : ""}`;
       case "contribute": return `Keeping facts from ${host(v("url"))}`;
       case "run_capability": return `Running ${v("id")} on ${v("value")}`;
       case "graph_lookup": return `Checking the graph for ${v("ref")}`;

@@ -22,7 +22,7 @@ const timeOf = (e: { from?: string; to?: string; at?: string }): TimeOut =>
 // Entity types: capability type/kind → registry node type + kind (+ identity hints the resolver keys on)
 // ---------------------------------------------------------------------------
 const ORG_KIND: Record<string, string> = { public_company: "company", government_agency: "agency", law_firm: "company", registrar: "company", nonprofit: "nonprofit", school: "school", company: "company", fund: "fund", court: "court" };
-const ACCOUNT_KIND: Record<string, string> = { domain: "domain", hostname: "hostname", ip: "ip", ip_address: "ip", email: "email", username: "username", handle: "handle", phone: "phone", wallet: "wallet" };
+const ACCOUNT_KIND: Record<string, string> = { domain: "domain", hostname: "hostname", ip: "ip", ip_address: "ip", email: "email", username: "username", handle: "handle", phone: "phone", wallet: "wallet", instagram: "instagram", tiktok: "tiktok", twitter: "twitter", x: "twitter" };
 const DOC_KIND: Record<string, string> = { image: "photo", url: "page", page: "page", document: "page", filing: "filing", article: "article" };
 /** the strongest external identifier wins the single `registry_id` identity slot; the rest stay attributes */
 const REGISTRY_ID_ORDER = ["lei", "cik", "ein", "companies_house", "companies_house_number", "opencorporates", "registration_number", "docket", "wikidata", "opensanctions"];

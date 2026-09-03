@@ -7,6 +7,7 @@ import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, we
 import { gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives, dehashed } from "./people.ts";
 import { exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox } from "./media.ts";
 import { edgar, gleif, wikidata, nonprofit, usaspending, courtCases, companiesHouse, openCorporates, sanctions } from "./org.ts";
+import { igProfile, igPosts, igComments } from "./social.ts";
 
 export interface CapRunner {
   id: string;
@@ -55,6 +56,11 @@ export const CAP_RUNNERS: CapRunner[] = [
   { id: "org.companies_house", consumes: ["org"], run: one(companiesHouse), auto: true },
   { id: "org.opencorporates", consumes: ["org", "name"], run: (a, kind) => openCorporates(a.join(" "), kind === "name" ? "officer" : "company"), auto: true },
   { id: "org.sanctions", consumes: ["org", "name"], run: one(sanctions), auto: true },
+  // Cluster E — social (Apify). Profile is cheap and auto-fires on a handle; posts/comments cost more and
+  // are agent-invoked (run_capability) so the investigator decides when a dive is worth it.
+  { id: "social.ig_profile", consumes: ["username"], run: (a) => igProfile(a[0]!), auto: true, maxPerRun: 4 },
+  { id: "social.ig_posts", consumes: ["username"], run: (a) => igPosts(a[0]!, a[1] ? Number(a[1]) : 30), auto: false },
+  { id: "social.ig_comments", consumes: ["url"], run: (a) => igComments(a[0]!, a[1] ? Number(a[1]) : 50), auto: false },
 ];
 
 export const capRunner = (id: string): CapRunner | undefined => CAP_RUNNERS.find((r) => r.id === id);
