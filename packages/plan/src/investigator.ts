@@ -122,7 +122,7 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
     { name: "graph_paths", description: "Shortest paths between two entities (the surprising N-hop link).", input_schema: { type: "object", properties: { a: { type: "string" }, b: { type: "string" }, max_len: { type: "integer" } }, required: ["a", "b"] } },
     { name: "graph_timeline", description: "Dated facts of an entity, earliest first; undated last. Gaps are leads.", input_schema: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] } },
     { name: "graph_contested", description: "Facts with conflicting evidence (optionally for one entity).", input_schema: { type: "object", properties: { ref: { type: "string" } } } },
-    { name: "graph_gaps", description: "What the Question's indicators still lack on the subject and its neighbours, ranked — a suggestion list, not orders.", input_schema: { type: "object", properties: { limit: { type: "integer" } } } },
+    { name: "graph_gaps", description: "Two ranked suggestion lists (not orders): INDICATOR GAPS (what the goal still lacks) and UNOPENED entities (people/accounts/orgs linked to the case but never investigated — referenced yet with no facts gathered about them). Use it in the ASSESS step: opening the top unopened leads is how the case keeps going instead of stalling when searches dry up.", input_schema: { type: "object", properties: { limit: { type: "integer" } } } },
     { name: "graph_sql", description: "Read-only SQL over this investigation's graph tables (entities, links, attributes, relation_claims, attribute_claims, sources, notes, hypotheses, decisions). SELECT only; an investigation_id filter is added for you where the table has one. Use for anything the other graph tools don't cover.", input_schema: { type: "object", properties: { sql: { type: "string" } }, required: ["sql"] } },
     { name: "graph_duplicates", description: "Groups of entities that look like the same thing: same name, one name inside another (kim / halokim), a shared handle between a person and an account, or a person and an account with the same handle. Resolve each group with same_as (quote) / not_same_as (reason) before you finish.", input_schema: { type: "object", properties: {} } },
     { name: "why", description: "The evidence behind a link or attribute id (from graph_lookup): claims, quotes, sources, publisher kinds, independent origins.", input_schema: { type: "object", properties: { kind: { type: "string", enum: ["link", "attribute", "entity"] }, id: { type: "string" } }, required: ["kind", "id"] } },
@@ -267,11 +267,14 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
       }
       case "graph_gaps": {
         const g = await graph(); const q = (await openQuestions(inv.id))[0];
-        if (!q) return "no compiled question yet (indicators come from the goal); use your own plan";
-        const subj = (q.subject_entity_id && g.entities.get(q.subject_entity_id)) || findEnt(g, inv.seed.name) || [...g.entities.values()].sort((a, b) => b.claim_count - a.claim_count)[0];
-        if (!subj) return "empty graph";
-        const drafts = buildMissions(computeGaps(g, subj.id, q.indicators, 2, { maxRing: 2 }));
-        return drafts.slice(0, Math.min(40, Number(input.limit ?? 20))).map((d) => `${d.score.toFixed(2)}  ${d.objective}`).join("\n") || "no gaps — the indicators are satisfied";
+        const subj = (q?.subject_entity_id && g.entities.get(q.subject_entity_id)) || findEnt(g, inv.seed.name) || [...g.entities.values()].sort((a, b) => b.claim_count - a.claim_count)[0];
+        if (!subj) return "empty graph — start by reading the seed and running connectors on it";
+        const lim = Math.min(40, Number(input.limit ?? 20));
+        const parts: string[] = [];
+        if (q) { const drafts = buildMissions(computeGaps(g, subj.id, q.indicators, 2, { maxRing: 2 })); if (drafts.length) parts.push("INDICATOR GAPS (what the goal still lacks):\n" + drafts.slice(0, lim).map((d) => `  ${d.score.toFixed(2)}  ${d.objective}`).join("\n")); }
+        const unopened = unopenedLeads(g, subj.id, lim);
+        if (unopened.length) parts.push(`UNOPENED (linked to the case but never investigated — open the ones worth the cost):\n${unopened.join("\n")}`);
+        return parts.join("\n\n") || "no gaps and nothing unopened within 2 hops — the case is saturated at this radius (widen the subject, or the stopping bar may be met)";
       }
       case "graph_sql": {
         const sql = S("sql").replace(/;\s*$/, "");
@@ -433,6 +436,51 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
   };
   const src = (u: string) => { try { return new URL(u).hostname; } catch { return u; } };
 
+  // Unopened leads: entities LINKED to the case but never investigated — referenced by others yet with no facts
+  // gathered ABOUT them (no outbound links, ≤1 attribute). This is the "a human stops when unopened entities run
+  // out, not when queries dry up" signal (research/19 F6). Ranked by proximity to the subject and how often the
+  // case already mentions them. Pure graph — no auto-firing; the agent picks which to open.
+  const INVESTIGABLE = new Set(["person", "organization", "account", "instagram", "tiktok", "twitter", "place", "domain", "email", "username", "phone"]);
+  const TYPE_WEIGHT: Record<string, number> = { person: 1.6, instagram: 1.5, account: 1.4, tiktok: 1.4, twitter: 1.4, organization: 1.2, domain: 1.0, email: 1.3, username: 1.3, phone: 1.2, place: 0.8 };
+  const nextMove = (e: GEntity): string => {
+    const t = e.type, k = e.kind ?? "";
+    if (t === "instagram" || k === "instagram") return `social.ig_profile / look_at their photos`;
+    if (t === "account" || t === "username" || k === "username" || k === "handle") return `people.username + social.ig_profile on the handle`;
+    if (t === "person") return `search the name + run people.* connectors; open any handle`;
+    if (t === "organization") return `org.* connectors + read the site`;
+    if (t === "domain") return `infra.rdap / infra.passive_dns / read the site`;
+    if (t === "email") return `people.gravatar / people.breach / people.dehashed`;
+    if (t === "place") return `geo.geocode; read about it`;
+    return `search + read`;
+  };
+  const unopenedLeads = (g: Graph, subjectId: string, limit = 12): string[] => {
+    // BFS hop distance over both directions
+    const hop = new Map<string, number>([[subjectId, 0]]);
+    let frontier = [subjectId];
+    for (let d = 1; d <= 2 && frontier.length; d++) {
+      const next: string[] = [];
+      for (const id of frontier) for (const l of [...(g.out.get(id) ?? []), ...(g.inn.get(id) ?? [])]) {
+        const o = l.src === id ? l.dst : l.src;
+        if (!hop.has(o)) { hop.set(o, d); next.push(o); }
+      }
+      frontier = next;
+    }
+    const scored: { e: GEntity; d: number; mentions: number; score: number }[] = [];
+    for (const [id, d] of hop) {
+      if (d === 0) continue;
+      const e = g.entities.get(id); if (!e) continue;
+      const type = e.type.toLowerCase();
+      if (!INVESTIGABLE.has(type) && !INVESTIGABLE.has(e.kind ?? "")) continue;
+      const out = (g.out.get(id) ?? []).length, attrs = (g.attrsOf.get(id) ?? []).length, inn = (g.inn.get(id) ?? []).length;
+      if (out > 0 || attrs > 1) continue; // it's been explored — facts exist about it
+      const w = TYPE_WEIGHT[type] ?? TYPE_WEIGHT[e.kind ?? ""] ?? 0.9;
+      const score = (d === 1 ? 2 : 1) * (1 + Math.log1p(inn)) * w;
+      scored.push({ e, d, mentions: inn, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit).map(({ e, d, mentions }) => `  entity:${short(e.id)}  ${e.name} [${e.type}${e.kind ? "/" + e.kind : ""}]  ${d}-hop · ${mentions} mention${mentions === 1 ? "" : "s"} · unopened → ${nextMove(e)}`);
+  };
+
   // ---- the run --------------------------------------------------------------------------------------------
   const g0 = await graph(true);
   const inventory = g0.entities.size ? `The graph already holds ${g0.entities.size} entities and ${g0.links.length} links. Start with graph_lookup on the subject and the notebook.` : "The graph is empty. Start by reading the seed's own pages and running the connectors on it.";
@@ -470,7 +518,7 @@ GOAL: ${inv.goal_text}
 
 ${inventory}
 
-The rhythm: COLLECT (search deep — pages 2–5, several engines, operators; read the pages; run connectors on every identifier; contribute what is relevant and supported) → when you are satisfied with a round, CONSOLIDATE (rebuild, settle duplicates with graph_duplicates / same_as / not_same_as / split, retract junk, group entities that are one thing for the reader) → ASSESS (what is established, what is thin, what is missing, what is surprising; update the hypothesis board; ask_graph when a synthesis helps) → CONTINUE with the most valuable lead. Repeat until the stopping bar is met (consult_playbook("investigator/stopping")).
+The rhythm: COLLECT (search deep — pages 2–5, several engines, operators; read the pages; run connectors on every identifier; look_at the photos; contribute what is relevant and supported) → when you are satisfied with a round, CONSOLIDATE (rebuild, settle duplicates with graph_duplicates / same_as / not_same_as / split, retract junk, group entities that are one thing for the reader) → ASSESS (what is established, what is thin, what is missing, what is surprising; update the hypothesis board; run graph_gaps and read its UNOPENED list — the people and accounts linked to the case you have not yet investigated; ask_graph when a synthesis helps) → CONTINUE by opening the most valuable unopened lead. A dry search does not end the case; an empty UNOPENED list (nothing left worth its cost) does. Repeat until the stopping bar is met (consult_playbook("investigator/stopping")).
 
 When a message arrives, answer it FIRST with send_message — in the size the message deserves (a quick question gets a quick answer; "two sentences" means two sentences) — and say what you will do next if there is work; then do the work. A small ask does not start a new collection round. Talk to the person as you go with send_message: a solid finding as soon as you have it, the plan when you change it, a question when only they can answer. Short, plain, specific; ids in square brackets at the END of a sentence so they can tap the evidence. Do not narrate tool calls; do not repeat what the activity feed shows. When they send you a message, treat it as a lead or an instruction from the owner of the case and act on it. End your turn with finish when you are waiting on them or the case is done for now — the conversation is the report; there is no separate report.
 

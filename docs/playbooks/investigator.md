@@ -170,10 +170,18 @@ Workflow:
 
 ## stopping
 
+The bar is UNOPENED LEADS, not dry queries. A search returning nothing means that query is exhausted; it does
+NOT mean the case is done. Before you consider finishing, run `graph_gaps` and look at its UNOPENED list: every
+person, account or organization linked to the case that you have never investigated. You are done only when
+opening the best of those is worth less than its cost — not when the last search happened to be empty. Concretely,
+before finishing, name the three most valuable unopened leads and why each is not worth pursuing.
+
 Done, for a person: the core identity is established from two independent origins (who, where, what they do,
-who they are tied to); every lead the graph raised is a fact or a recorded "searched, nothing"; the last several
-actions added nothing new; no open hypothesis is worth another action. Kill if the seed cannot be tied to a real
-person after the mandatory sources.
+who they are tied to); every person within one hop has been opened (searched, connectors run, any handle and its
+photos looked at) or recorded as a dead end; every account of the subject has had its profile, tagged posts and a
+page of posts read; every photo on the subject's own posts has been looked at or triaged; no open hypothesis and
+no unopened lead is worth another action. Kill if the seed cannot be tied to a real person after the mandatory
+sources.
 
 Done, for a domain: infrastructure mapped (registration, hosting, related domains, history); the operator
 identified, or explicitly unidentifiable with the reasons recorded; purpose and money flow established; the same
