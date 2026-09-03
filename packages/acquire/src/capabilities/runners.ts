@@ -5,7 +5,7 @@
 import type { CapabilityResult, PivotKind } from "./types.ts";
 import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, webPrimitives, passiveDns } from "./domain.ts";
 import { gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives, dehashed } from "./people.ts";
-import { exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox } from "./media.ts";
+import { exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox, faceSearch } from "./media.ts";
 import { edgar, gleif, wikidata, nonprofit, usaspending, courtCases, companiesHouse, openCorporates, sanctions } from "./org.ts";
 import { igProfile, igPosts, igComments } from "./social.ts";
 
@@ -43,6 +43,8 @@ export const CAP_RUNNERS: CapRunner[] = [
   { id: "people.relatives", consumes: ["name"], run: one(relatives), auto: true },
   { id: "media.exif", consumes: ["image"], run: (a) => exif(a[0]!), auto: true },
   { id: "media.reverse_image", consumes: ["image"], run: (a) => reverseImage(a[0]!), auto: true, maxPerRun: 3 },
+  // BIOMETRIC, GATED: never auto-fires; needs FACECHECK_API_TOKEN; matches are leads to confirm, not proof.
+  { id: "media.face_search", consumes: ["image"], run: (a) => faceSearch(a[0]!), auto: false },
   { id: "geo.geocode", consumes: [], run: one(geocode), auto: false },
   { id: "geo.map", consumes: ["coordinates"], run: (a) => { const [lat, lon, r] = coords(a); return nearbyPOIs(lat!, lon!, r, a[3]); }, auto: true, maxPerRun: 3 },
   { id: "geo.chronolocation", consumes: [], run: (a) => chronoCheck(Number(a[0]), Number(a[1]), a[2]!), auto: false },

@@ -1,6 +1,6 @@
 // Cluster C parse tests — fixtures are real response shapes captured live on 2026-09-01 (research/17).
 import { describe, it, expect } from "vitest";
-import { parseExif, parseReverseImage, parseNominatim, parseOverpass, buildAroundQuery, parseChrono, sunPosition, weatherDescription, parseOpenSky, GATED_MEDIA } from "../../src/capabilities/media.ts";
+import { parseExif, parseReverseImage, parseNominatim, parseOverpass, buildAroundQuery, parseChrono, sunPosition, weatherDescription, parseOpenSky, parseFaceSearch, faceSearch, GATED_MEDIA } from "../../src/capabilities/media.ts";
 
 describe("C1 exif", () => {
   it("extracts timestamp, device, serial, and GPS → coordinates pivot", () => {
@@ -100,5 +100,42 @@ describe("gated media declarations", () => {
     const ids = GATED_MEDIA.map((g) => g.id);
     expect(ids).toContain("media.face_search");
     expect(GATED_MEDIA.every((g) => g.gated)).toBe(true);
+  });
+});
+
+describe("C6 face search (FaceCheck) — leads, never proof", () => {
+  const items = [
+    { score: 94, url: "https://site-a.com/profile", base64: "data:...", guid: "1" },
+    { score: 78, url: "https://site-b.com/photo", guid: "2" },
+    { score: 40, url: "https://noise.com/x", guid: "3" }, // below 70 → dropped
+    { score: 88, url: "https://site-c.com/page", guid: "4" },
+  ];
+  const r = parseFaceSearch(items, "img://face.jpg");
+  it("keeps only matches ≥70 as WEAK url pivots, best first", () => {
+    const urls = r.pivots.filter((p) => p.kind === "url").map((p) => p.value);
+    expect(urls).toEqual(["https://site-a.com/profile", "https://site-c.com/page", "https://site-b.com/photo"]);
+    expect(r.pivots.every((p) => p.weak)).toBe(true);
+    expect(urls).not.toContain("https://noise.com/x");
+  });
+  it("never asserts identity: no person entity, no depicts edge, low grade + caveat", () => {
+    expect(r.entities.filter((e) => e.type === "person")).toHaveLength(0);
+    expect(r.edges).toHaveLength(0);
+    expect(r.provenance.grade).toBe("low");
+    expect(r.provenance.note).toMatch(/lead, not proof/i);
+    expect(r.attributes.find((a) => a.key === "top_face_score")?.value).toMatch(/94 \(certain\)/);
+  });
+  it("drops base64 thumbnails from the audit copy", () => {
+    expect(JSON.stringify(r.raw)).not.toContain("base64");
+    expect(JSON.stringify(r.raw)).not.toContain("data:...");
+  });
+  it("no matches ≥70 → note, nothing to chase", () => {
+    const rr = parseFaceSearch([{ score: 30, url: "https://x.com" }], "img://f.jpg");
+    expect(rr.pivots).toHaveLength(0);
+    expect(rr.provenance.note).toMatch(/noise/i);
+  });
+  it("is hard-gated: refuses without FACECHECK_API_TOKEN", async () => {
+    const saved = process.env.FACECHECK_API_TOKEN; delete process.env.FACECHECK_API_TOKEN;
+    await expect(faceSearch("https://x.com/a.jpg")).rejects.toThrow(/gated|FACECHECK_API_TOKEN/i);
+    if (saved) process.env.FACECHECK_API_TOKEN = saved;
   });
 });

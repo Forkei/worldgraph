@@ -86,6 +86,23 @@ Workflow:
    (name + employer + city + period), or a page that explicitly links them. Otherwise keep them apart and say so.
 7. Done when the bar in `stopping` is met.
 
+### social & photos (where most of a person actually lives)
+A profile is a corpus, not a page. On a handle, run `social.ig_profile`; if it is the subject or a close
+associate, run `social.ig_posts` (captions, locations, tagged users) and `social.ig_comments` on the richest
+posts (commenters are family and friends by real name). Then USE THE PHOTOS: every post/profile image comes
+back as an `image:` pivot — `look_at` the ones on the subject's own posts. A photo yields the brother in frame,
+a name on a jersey or storefront, the dog, the era, and a placeable location. `look_at` describes; it does not
+identify — pull names from captions, tags, comments and the scene, then confirm the join by the rule in step 6.
+Geolocation: read the text in the image (signs, plates), name the landmark, then search to confirm; assert a
+locality with a grade, never a home address.
+
+### face search (biometric — gated, leads only)
+`media.face_search` (FaceCheck.ID) turns a face into the pages where it appears. It is OFF unless the operator
+enabled it, costs money, and is legally sensitive. Its matches are LEADS, never proof: a score is not an
+identity. Open the top matches, read them, and establish who the person is from the page's own content and the
+step-6 rule — never assert `depicts`/identity on the match score alone. Use it only when identity is the whole
+question and cheaper paths (handle, caption, tag, reverse-image) are exhausted.
+
 ## organization case
 
 Indicators: legal identity (registry number, jurisdiction, status, dates, registered address), ownership and

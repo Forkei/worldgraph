@@ -258,6 +258,71 @@ export async function aircraftInBox(lamin: number, lomin: number, lamax: number,
 }
 
 // ---------------------------------------------------------------------------
+// C6. Face search (FaceCheck.ID) — BIOMETRIC, GATED. A face → the pages on the web where that face appears.
+// This is the one capability that puts a name to a face, and the one with real legal exposure (BIPA, GDPR
+// Art. 9). It is OFF unless FACECHECK_API_TOKEN is set, never auto-fires, and returns matches as WEAK LEADS
+// (url pivots + scores) to be read and confirmed — never a confirmed "depicts". The agent must open the top
+// matches and establish identity from what it finds there, the same as any other lead.
+// ---------------------------------------------------------------------------
+interface FaceItem { score?: number; guid?: string; url?: string; base64?: string }
+interface FaceSearchResp { error?: string | null; message?: string; id_search?: string; progress?: number; output?: { items?: FaceItem[] } }
+const FC_BASE = "https://facecheck.id/api";
+const faceToken = () => process.env.FACECHECK_API_TOKEN;
+
+/** score bands FaceCheck documents: ≥90 certain, 83–89 likely, 70–82 uncertain, <70 noise. */
+const faceBand = (s: number): string => s >= 90 ? "certain" : s >= 83 ? "likely" : s >= 70 ? "uncertain" : "weak";
+
+export function parseFaceSearch(items: FaceItem[], label: string): CapabilityResult {
+  const prov: CapProvenance = { capability: "media.face_search", source: "FaceCheck.ID", fetched_at: now(), grade: "low", tier: "spicy", gated: true, note: "BIOMETRIC match — a LEAD, not proof. Open each match and confirm identity from the page; never assert 'depicts' on the score alone." };
+  const r = emptyResult(prov);
+  r.raw = { count: items?.length, items: (items ?? []).map((i) => ({ score: i.score, url: i.url })) }; // drop base64 thumbnails from the audit copy
+  const hits = (items ?? []).filter((i) => i.url && (i.score ?? 0) >= 70).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  if (!hits.length) { prov.note = "no face matches ≥70 (below this is noise) — nothing to chase"; return r; }
+  r.attributes.push({ entity: label, key: "face_matches", value: String(hits.length) });
+  r.attributes.push({ entity: label, key: "top_face_score", value: `${hits[0]!.score} (${faceBand(hits[0]!.score ?? 0)})` });
+  for (const h of hits.slice(0, 15)) r.pivots.push({ kind: "url", value: h.url!, weak: true }); // read these to establish who it is
+  r.pivots = dedupePivots(r.pivots);
+  return r;
+}
+
+async function fetchImageBytes(url: string): Promise<{ buf: Buffer; type: string }> {
+  const res = await fetch(url, { headers: { "User-Agent": "worldgraph-research/1.0", Accept: "image/*" }, signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`image fetch ${res.status}`);
+  const type = (res.headers.get("content-type") ?? "image/jpeg").split(";")[0]!.trim();
+  return { buf: Buffer.from(await res.arrayBuffer()), type };
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** imgUrl → the pages where this face appears. Gated on FACECHECK_API_TOKEN. `demo` uses FaceCheck's free
+ *  test mode (fake results, no credits) to verify wiring. */
+export async function faceSearch(imgUrl: string, opts: { demo?: boolean } = {}): Promise<CapabilityResult> {
+  const token = faceToken();
+  if (!token) throw new Error("media.face_search is gated: set FACECHECK_API_TOKEN (paid). It never runs without it, and matches are leads to confirm, not proof.");
+  const auth = { Authorization: token, Accept: "application/json" };
+  // 1) upload the image
+  const { buf, type } = await fetchImageBytes(imgUrl);
+  const form = new FormData();
+  form.append("images", new Blob([new Uint8Array(buf)], { type }), "face.jpg");
+  const up = await fetch(`${FC_BASE}/upload_pic`, { method: "POST", headers: auth, body: form, signal: AbortSignal.timeout(60_000) }).then((x) => x.json() as Promise<FaceSearchResp>);
+  if (up.error) throw new Error(`FaceCheck upload: ${up.message || up.error}`);
+  const idSearch = up.id_search;
+  if (!idSearch) throw new Error("FaceCheck upload returned no id_search");
+  // 2) poll search until output is ready
+  let last: FaceSearchResp = {};
+  for (let i = 0; i < 20; i++) {
+    last = await postJson<FaceSearchResp>(`${FC_BASE}/search`, { id_search: idSearch, with_progress: true, status_only: false, demo: !!opts.demo }, { rateKey: "facecheck.id", minIntervalMs: 3000, timeoutMs: 60_000, headers: auth });
+    if (last.error) throw new Error(`FaceCheck search: ${last.message || last.error}`);
+    if (last.output?.items) break;
+    await sleep(4000);
+  }
+  const r = parseFaceSearch(last.output?.items ?? [], imgUrl);
+  r.provenance.url = `${FC_BASE}/search (id_search ${idSearch})`;
+  if (opts.demo) r.provenance.note = "DEMO mode — sample results, not a real search. " + (r.provenance.note ?? "");
+  return r;
+}
+
+// ---------------------------------------------------------------------------
 // Gated / keyed geo (not called live — declared for the registry & the gate)
 // ---------------------------------------------------------------------------
 // Also needs-free-key (build in Wave 2, not gated): Mapillary (street-level imagery) and Sentinel Hub (satellite).

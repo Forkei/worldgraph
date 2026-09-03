@@ -137,10 +137,14 @@ Effort: 1 day.
   lat/lon and a map link; claims contributed from a `look_at` carry support `vision`, so grades discount them
   until corroborated.
 
-## F8. Gated (the maintainer's call, off by default)
+## F8. Face search (BUILT — gated, off by default)
 
-Face search (PimEyes, FaceCheck) is declared in `GATED_MEDIA`. It is the single largest unlock for family and
-friends and the single largest legal exposure (BIPA, GDPR biometric rules). Not wired until explicitly enabled.
+`media.face_search` (FaceCheck.ID) turns a face into the pages where it appears. Gated on `FACECHECK_API_TOKEN`:
+off without it, never auto-fires, matches returned as WEAK url leads with a score band — never a confirmed
+`depicts`. The agent must open the top matches and establish identity from the page content (person playbook,
+step 6). Base64 thumbnails are dropped from the audit copy. PimEyes has no official API and actively blocks
+automation, so FaceCheck is the wired provider; PimEyes stays a manual/gated option. Largest unlock for family
+and friends, largest legal exposure (BIPA, GDPR Art. 9) — the operator opts in by providing the token.
 
 ---
 
