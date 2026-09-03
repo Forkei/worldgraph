@@ -330,7 +330,7 @@ let scale = 1, ox = 0, oy = 0, dragging = null, selected = null, ptrs = new Map(
 // force sim (d3-force style, Obsidian-like): alpha cools over ~300 ticks, then freezes; interaction reheats it
 let alpha = 0, alphaTarget = 0;
 const ALPHA_MIN = 0.0015, ALPHA_DECAY = 1 - Math.pow(ALPHA_MIN, 1/300), V_DECAY = 0.6;
-const CHARGE = 260, GRAVITY = 0.05, LINK_DIST = 42, LINK_STR = 1, COLLIDE_PAD = 5, GROUP_PULL = 0.06;
+const CHARGE = 200, GRAVITY = 0.05, LINK_DIST = 42, LINK_STR = 1, COLLIDE_PAD = 5, GROUP_PULL = 0.06, V_MAX = 18;
 function reheat(a = 1) { alpha = Math.max(alpha, a); }
 function resize() { const dpr = Math.min(2, devicePixelRatio || 1); canvas.width = W()*dpr; canvas.height = H()*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); }
 addEventListener("resize", resize); resize();
@@ -354,8 +354,11 @@ function step() {
     a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy; }
   // exploded-group members keep a loose cluster
   for (const n of nodes) if (n.expandedGroup) for (const m of nodes) if (m !== n && m.expandedGroup === n.expandedGroup) { const dx = m.x-n.x, dy = m.y-n.y, d = Math.hypot(dx,dy)||1, f = (d-60)/d*GROUP_PULL*alpha; n.vx += dx*f; n.vy += dy*f; }
-  // integrate + friction (d3 velocityDecay)
-  for (const n of nodes) { if (n === dragging) { n.vx = n.vy = 0; continue; } n.vx *= V_DECAY; n.vy *= V_DECAY; n.x += n.vx; n.y += n.vy; }
+  // integrate + friction (d3 velocityDecay); clamp speed so a dense graph can never blow up to Infinity/NaN
+  for (const n of nodes) { if (n === dragging) { n.vx = n.vy = 0; continue; } n.vx *= V_DECAY; n.vy *= V_DECAY;
+    const sp = Math.hypot(n.vx, n.vy); if (sp > V_MAX) { n.vx = n.vx/sp*V_MAX; n.vy = n.vy/sp*V_MAX; }
+    if (!isFinite(n.vx) || !isFinite(n.vy)) { n.vx = n.vy = 0; }
+    n.x += n.vx; n.y += n.vy; }
   // collision: no two nodes overlap (this is most of the tidiness), 2 relaxation passes
   for (let it = 0; it < 2; it++) for (let i = 0; i < nodes.length; i++) { const a = nodes[i];
     for (let j = i+1; j < nodes.length; j++) { const b = nodes[j]; let dx = b.x-a.x, dy = b.y-a.y, d = Math.hypot(dx,dy)||1; const min = a.r+b.r+COLLIDE_PAD;
@@ -398,7 +401,7 @@ canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.point
 canvas.addEventListener("pointermove", (e) => { if (!ptrs.has(e.pointerId)) return; ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); if (ptrs.size === 2) { const p = [...ptrs.values()], d = Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y), cx = (p[0].x+p[1].x)/2, cy = (p[0].y+p[1].y)/2; if (pinch) { const f = d/pinch, w = toWld(cx,cy), r = canvas.getBoundingClientRect(); scale = Math.max(.15, Math.min(4, scale*f)); ox = cx-r.left-w.x*scale; oy = cy-r.top-w.y*scale; } pinch = d; moved = true; return; } if (!last) return; const dx = e.clientX-last.x, dy = e.clientY-last.y; if (Math.abs(dx)+Math.abs(dy) > 3) moved = true; if (dragging) { const w = toWld(e.clientX,e.clientY); dragging.x = w.x; dragging.y = w.y; dragging.vx = dragging.vy = 0; reheat(0.4); } else { ox += dx; oy += dy; } last = {x:e.clientX,y:e.clientY}; });
 canvas.addEventListener("pointerup", (e) => { ptrs.delete(e.pointerId); const halo = !moved && !down ? pickHalo(e.clientX, e.clientY) : null; if (halo) { expanded.delete(halo.gid); selected = null; closeSheet(); layoutGraph(); dragging = null; last = null; down = null; return; } if (!moved && down) { if (down.type === "group") { expanded.add(down.group.id); selected = null; closeSheet(); layoutGraph(); } else openNode(down.id); } else if (!moved && !down) { selected = null; closeSheet(); } dragging = null; last = null; down = null; if (ptrs.size < 2) pinch = 0; });
 canvas.addEventListener("wheel", (e) => { e.preventDefault(); const f = Math.exp(-e.deltaY*0.0015), w = toWld(e.clientX,e.clientY), r = canvas.getBoundingClientRect(); scale = Math.max(.15, Math.min(4, scale*f)); ox = e.clientX-r.left-w.x*scale; oy = e.clientY-r.top-w.y*scale; }, { passive:false });
-function fit() { if (!nodes.length) return; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for (const n of nodes) { x0=Math.min(x0,n.x); y0=Math.min(y0,n.y); x1=Math.max(x1,n.x); y1=Math.max(y1,n.y); } const pad = 50; scale = Math.max(.15, Math.min(2, Math.min((W()-pad*2)/((x1-x0)||1), (H()-pad*2-60)/((y1-y0)||1)))); ox = W()/2 - (x0+x1)/2*scale; oy = H()/2 + 20 - (y0+y1)/2*scale; }
+function fit() { if (!nodes.length) return; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for (const n of nodes) { if (!isFinite(n.x) || !isFinite(n.y)) { n.x = W()/2 + (Math.random()-.5)*300; n.y = H()/2 + (Math.random()-.5)*300; n.vx = n.vy = 0; } x0=Math.min(x0,n.x); y0=Math.min(y0,n.y); x1=Math.max(x1,n.x); y1=Math.max(y1,n.y); } const pad = 50; scale = Math.max(.15, Math.min(2, Math.min((W()-pad*2)/((x1-x0)||1), (H()-pad*2-60)/((y1-y0)||1)))); if (!isFinite(scale)) scale = 1; ox = W()/2 - (x0+x1)/2*scale; oy = H()/2 + 20 - (y0+y1)/2*scale; if (!isFinite(ox)) ox = 0; if (!isFinite(oy)) oy = 0; }
 function focusNode(id) { const n = nmap.get(id); if (!n) return; scale = Math.max(scale, 1); ox = W()/2 - n.x*scale; oy = H()/3 - n.y*scale; }
 $("#btn-fit").onclick = fit;
 $("#btn-refresh").onclick = () => loadGraph();
