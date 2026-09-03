@@ -171,10 +171,16 @@ Workflow:
 ## stopping
 
 The bar is UNOPENED LEADS, not dry queries. A search returning nothing means that query is exhausted; it does
-NOT mean the case is done. Before you consider finishing, run `graph_gaps` and look at its UNOPENED list: every
-person, account or organization linked to the case that you have never investigated. You are done only when
-opening the best of those is worth less than its cost — not when the last search happened to be empty. Concretely,
-before finishing, name the three most valuable unopened leads and why each is not worth pursuing.
+NOT mean the case is done. Before you consider finishing, list the entities linked to the case that you have
+never investigated — the ones referenced by others but with nothing gathered about them:
+
+    graph_sql: SELECT canonical_name, type FROM entities e
+      WHERE NOT EXISTS (SELECT 1 FROM links WHERE src = e.id)
+        AND (SELECT count(*) FROM attributes WHERE entity = e.id) <= 1
+
+Those are your open leads. You are done only when opening the best of them is worth less than its cost — not
+when the last search happened to be empty. Concretely, before finishing, name the three most valuable unopened
+leads and why each is not worth pursuing.
 
 Done, for a person: the core identity is established from two independent origins (who, where, what they do,
 who they are tied to); every person within one hop has been opened (searched, connectors run, any handle and its
