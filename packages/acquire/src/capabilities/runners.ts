@@ -3,7 +3,7 @@
 // (single-value inputs); multi-argument tools (chronolocation, aircraft bbox) stay CLI-only. `maxPerRun` caps
 // how many times the engine fires a noisy/slow runner in one invocation (WhatsMyName = 716 probes).
 import type { CapabilityResult, PivotKind } from "./types.ts";
-import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, webPrimitives } from "./domain.ts";
+import { rdap, dns, certTransparency, wayback, urlscanSearch, reverseIp, asn, webPrimitives, passiveDns } from "./domain.ts";
 import { gravatar, fecDonations, academic, usernameAccounts, hibpCatalog, hibpAccount, hunter, relatives, dehashed } from "./people.ts";
 import { exif, reverseImage, geocode, nearbyPOIs, chronoCheck, aircraftInBox } from "./media.ts";
 import { edgar, gleif, wikidata, nonprofit, usaspending, courtCases, companiesHouse, openCorporates, sanctions } from "./org.ts";
@@ -29,6 +29,7 @@ export const CAP_RUNNERS: CapRunner[] = [
   { id: "infra.wayback", consumes: ["domain"], run: (a) => wayback(a[0]!), auto: true },
   { id: "infra.urlscan", consumes: ["domain"], run: (a) => urlscanSearch(a[0]!), auto: true },
   { id: "infra.reverse_ip", consumes: ["ip"], run: (a) => reverseIp(a[0]!), auto: true, maxPerRun: 5 },
+  { id: "infra.passive_dns", consumes: ["domain", "ip"], run: (a, kind) => passiveDns(a[0]!, kind === "ip" ? "ip" : "domain"), auto: true, maxPerRun: 8 },
   { id: "infra.asn", consumes: ["ip"], run: (a) => asn(a[0]!), auto: true },
   { id: "infra.web_primitives", consumes: ["domain"], run: (a) => webPrimitives(a[0]!), auto: true },
   { id: "people.gravatar", consumes: ["email"], run: (a) => gravatar(a[0]!), auto: true },

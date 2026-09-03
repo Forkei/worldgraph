@@ -1,6 +1,6 @@
 // Cluster A parse tests — fixtures are real response shapes captured live on 2026-09-01 (research/17).
 import { describe, it, expect } from "vitest";
-import { parseRdap, parseDns, parseCertSpotter, parseCrtsh, parseCdx, parseReverseIp, parseBgpview, parseRipestat, parseIpinfo, parseSecurityTxt, parseSitemap, SHARED_HOST_MAX } from "../../src/capabilities/domain.ts";
+import { parseRdap, parseDns, parseCertSpotter, parseCrtsh, parseCdx, parseReverseIp, parseBgpview, parseRipestat, parseIpinfo, parseSecurityTxt, parseSitemap, parseVtIpResolutions, parseVtDomain, SHARED_HOST_MAX } from "../../src/capabilities/domain.ts";
 
 describe("A1 rdap", () => {
   const j = {
@@ -135,5 +135,38 @@ describe("A6 reverse-ip shared hosting cap", () => {
     expect(r.pivots).toHaveLength(0);
     expect(r.attributes.find((a) => a.key === "cohosted_domains")?.value).toBe(String(SHARED_HOST_MAX + 5));
     expect(r.provenance.note).toMatch(/shared hosting/);
+  });
+});
+
+describe("A9 passive DNS (VirusTotal)", () => {
+  it("IP → sibling hostnames as weak domain pivots", () => {
+    const j = { data: [{ attributes: { host_name: "a.com" } }, { attributes: { host_name: "b.org" } }, { attributes: { host_name: "a.com" } }] };
+    const r = parseVtIpResolutions(j, "9.9.9.9");
+    expect(r.edges.filter((e) => e.predicate === "resolved_to")).toHaveLength(2); // deduped
+    expect(r.pivots.every((p) => p.kind === "domain" && p.weak)).toBe(true);
+  });
+  it("collapses a shared front (many hostnames) into a count only", () => {
+    const j = { data: Array.from({ length: 65 }, (_, i) => ({ attributes: { host_name: `h${i}.example.com` } })) };
+    const r = parseVtIpResolutions(j, "1.1.1.1");
+    expect(r.edges).toHaveLength(0);
+    expect(r.attributes.find((a) => a.key === "pdns_hostnames")?.value).toBe("65");
+    expect(r.provenance.note).toMatch(/shared front/);
+  });
+  it("domain → current A/NS/MX records + historical IPs as pivots", () => {
+    const dom = { data: { attributes: { last_dns_records: [{ type: "A", value: "5.5.5.5" }, { type: "NS", value: "ns1.host.com." }, { type: "MX", value: "10 mail.host.com." }], reputation: -3, categories: { engineX: "phishing" } } } };
+    const res = { data: [{ attributes: { ip_address: "5.5.5.5" } }, { attributes: { ip_address: "6.6.6.6" } }] };
+    const r = parseVtDomain(dom, res, "evil.test");
+    expect(r.edges.find((e) => e.predicate === "resolves_to")?.object).toBe("5.5.5.5");
+    expect(r.edges.find((e) => e.predicate === "uses_nameserver")?.object).toBe("ns1.host.com.");
+    expect(r.edges.find((e) => e.predicate === "uses_mx")?.object).toBe("mail.host.com");
+    expect(r.edges.filter((e) => e.predicate === "historically_resolved_to").map((e) => e.object)).toContain("6.6.6.6");
+    expect(r.attributes.find((a) => a.key === "vt_reputation")?.value).toBe("-3");
+    expect(r.attributes.find((a) => a.key === "vt_category")?.value).toBe("phishing");
+    expect(r.pivots.some((p) => p.kind === "ip" && p.value === "6.6.6.6" && p.weak)).toBe(true);
+  });
+  it("empty IP result → note, no entities", () => {
+    const r = parseVtIpResolutions({ data: [] }, "2.2.2.2");
+    expect(r.entities).toHaveLength(0);
+    expect(r.provenance.note).toMatch(/no passive-DNS/i);
   });
 });

@@ -2,7 +2,7 @@
 // half is unit-tested against real captured responses. Endpoints, grades and caveats: research/17 §Cluster A.
 // All keyless. Every runner is self-rate-limited and returns the uniform CapabilityResult.
 import { getJson, getJsonOrNull, getText } from "./http.ts";
-import { type CapabilityResult, type CapProvenance, type CapPivot, dedupePivots, emptyResult } from "./types.ts";
+import { type CapabilityResult, type CapProvenance, type CapPivot, type PivotKind, dedupePivots, emptyResult } from "./types.ts";
 
 const now = () => new Date().toISOString();
 
@@ -270,6 +270,71 @@ export async function reverseIp(ip: string, opts: { cdn?: boolean } = {}): Promi
   const url = `https://api.hackertarget.com/reverseiplookup/?q=${encodeURIComponent(ip)}`;
   const text = await getText(url, { rateKey: "hackertarget", minIntervalMs: 2000 });
   const r = parseReverseIp(text, ip, false); r.provenance.url = url; return r;
+}
+
+// ---------------------------------------------------------------------------
+// A9. Passive DNS (VirusTotal) — the CDN-proof sibling finder. A domain → the IPs it has resolved to over
+// time + its NS/MX + reputation; an IP → every hostname VT ever saw resolve to it (siblings behind a shared
+// front, which reverse-IP misses). Needs VIRUSTOTAL_API_KEY (free tier: 500/day, 4/min). Passive DNS is
+// HISTORICAL — a co-resolution is a past association, graded weak until a live record confirms it.
+// ---------------------------------------------------------------------------
+const vtKey = () => process.env.VIRUSTOTAL_API_KEY || process.env.VT_API_KEY;
+const PDNS_MAX = 60; // above this an IP is a shared front; keep a count, not a sibling list
+interface VtResolution { attributes?: { ip_address?: string; host_name?: string; date?: number } }
+interface VtResolutions { data?: VtResolution[] }
+interface VtDomain { data?: { attributes?: { last_dns_records?: { type?: string; value?: string }[]; reputation?: number; categories?: Record<string, string>; jarm?: string } } }
+
+/** IP → hostnames seen resolving to it (passive DNS reverse). The sibling detector. */
+export function parseVtIpResolutions(j: VtResolutions | null, ip: string): CapabilityResult {
+  const prov: CapProvenance = { capability: "infra.passive_dns", source: "VirusTotal", fetched_at: now(), grade: "B", tier: "normal", note: "passive DNS is historical — a co-resolution is a past association, not a current one" };
+  const r = emptyResult(prov);
+  r.raw = j;
+  const hosts = [...new Set((j?.data ?? []).map((d) => d.attributes?.host_name?.trim().toLowerCase()).filter((h): h is string => !!h && /^[\w.-]+\.[a-z]{2,}$/.test(h)))];
+  if (!hosts.length) { prov.note = "no passive-DNS resolutions for this IP"; return r; }
+  r.entities.push({ type: "ip_address", name: ip });
+  if (hosts.length > PDNS_MAX) { r.attributes.push({ entity: ip, key: "pdns_hostnames", value: String(hosts.length) }); prov.note = `${hosts.length} hostnames seen on this IP — shared front; siblings not derivable (count only)`; return r; }
+  for (const h of hosts) { r.entities.push({ type: "domain", name: h }); r.edges.push({ subject: h, predicate: "resolved_to", object: ip }); r.pivots.push({ kind: "domain", value: h, weak: true }); }
+  r.pivots = dedupePivots(r.pivots);
+  return r;
+}
+
+/** domain → historical IPs, NS/MX, reputation. */
+export function parseVtDomain(dom: VtDomain | null, res: VtResolutions | null, domain: string): CapabilityResult {
+  const prov: CapProvenance = { capability: "infra.passive_dns", source: "VirusTotal", fetched_at: now(), grade: "B", tier: "normal", note: "historical passive DNS + current records" };
+  const r = emptyResult(prov);
+  r.raw = { domain: dom, resolutions: res };
+  r.entities.push({ type: "domain", name: domain });
+  const recs = dom?.data?.attributes?.last_dns_records ?? [];
+  for (const rec of recs) {
+    const v = rec.value?.trim(); if (!v) continue;
+    if (rec.type === "A" || rec.type === "AAAA") { r.edges.push({ subject: domain, predicate: "resolves_to", object: v }); r.pivots.push({ kind: "ip", value: v }); }
+    else if (rec.type === "NS") { r.edges.push({ subject: domain, predicate: "uses_nameserver", object: v.toLowerCase() }); r.pivots.push({ kind: "domain", value: v.toLowerCase().replace(/\.$/, ""), weak: true }); }
+    else if (rec.type === "MX") { const mx = v.replace(/^\d+\s+/, "").toLowerCase().replace(/\.$/, ""); r.edges.push({ subject: domain, predicate: "uses_mx", object: mx }); r.pivots.push({ kind: "domain", value: mx, weak: true }); }
+  }
+  // historical IPs the domain used to point at — each a pivot for reverse passive DNS
+  const histIps = [...new Set((res?.data ?? []).map((d) => d.attributes?.ip_address?.trim()).filter((x): x is string => !!x))];
+  for (const ip of histIps.slice(0, 20)) { r.edges.push({ subject: domain, predicate: "historically_resolved_to", object: ip }); r.pivots.push({ kind: "ip", value: ip, weak: true }); }
+  const rep = dom?.data?.attributes?.reputation;
+  if (typeof rep === "number") r.attributes.push({ entity: domain, key: "vt_reputation", value: String(rep) });
+  const cats = Object.values(dom?.data?.attributes?.categories ?? {});
+  for (const c of [...new Set(cats)].slice(0, 4)) r.attributes.push({ entity: domain, key: "vt_category", value: c });
+  r.pivots = dedupePivots(r.pivots);
+  return r;
+}
+
+export async function passiveDns(value: string, kind: PivotKind = "domain"): Promise<CapabilityResult> {
+  const key = vtKey();
+  if (!key) throw new Error("infra.passive_dns needs VIRUSTOTAL_API_KEY (free: 500/day). No key = capability off.");
+  const h = { headers: { "x-apikey": key }, rateKey: "virustotal", minIntervalMs: 16_000, timeoutMs: 30_000 }; // free tier: 4/min
+  if (kind === "ip") {
+    const url = `https://www.virustotal.com/api/v3/ip_addresses/${encodeURIComponent(value)}/resolutions?limit=100`;
+    const j = await getJsonOrNull<VtResolutions>(url, h);
+    const r = parseVtIpResolutions(j, value); r.provenance.url = url; return r;
+  }
+  const base = `https://www.virustotal.com/api/v3/domains/${encodeURIComponent(value)}`;
+  const dom = await getJsonOrNull<VtDomain>(base, h);
+  const res = await getJsonOrNull<VtResolutions>(`${base}/resolutions?limit=40`, h);
+  const r = parseVtDomain(dom, res, value); r.provenance.url = base; return r;
 }
 
 // ---------------------------------------------------------------------------
