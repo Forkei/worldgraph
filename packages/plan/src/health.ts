@@ -19,6 +19,8 @@ export interface HealthReport {
   at: string;
   checks: HealthCheck[];
   capabilities: { enabled: number; off: { id: string; needs: string }[] };
+  /** tool failures recorded in the last 7 days (capability/search errors) — the post-check */
+  recentFailures: { id: string; count: number; last: string; sample: string }[];
 }
 
 const has = (k: string) => !!process.env[k];
@@ -116,7 +118,11 @@ export async function healthCheck(): Promise<HealthReport> {
   ]);
   const checks = [db, anthropic, gemini, serp, firecrawl, exa, apify, vt, dehashed, facecheck];
   const off = caps.filter((c) => !c.enabled).map((c) => ({ id: c.id, needs: (c.requires as { key?: string }).key ?? "gate" }));
+  // post-check: tool failures recorded in the last 7 days (capability/search errors now land in `actions`)
+  const recentFailures = db.status === "down" ? [] : await query<{ id: string; count: string; last: string; sample: string }>(
+    `SELECT COALESCE(capability_id, kind) id, count(*)::text count, max(created_at)::text last, (array_agg(result ORDER BY created_at DESC))[1] sample
+     FROM actions WHERE state='error' AND created_at > now() - interval '7 days' GROUP BY 1 ORDER BY count(*) DESC LIMIT 20`, []).catch(() => []);
   const ok = !checks.some((c) => c.status === "down");
   const ready = !checks.some((c) => c.status === "down" || c.status === "warn");
-  return { ok, ready, at: new Date().toISOString(), checks, capabilities: { enabled: caps.filter((c) => c.enabled).length, off } };
+  return { ok, ready, at: new Date().toISOString(), checks, capabilities: { enabled: caps.filter((c) => c.enabled).length, off }, recentFailures: recentFailures.map((r) => ({ id: r.id, count: Number(r.count), last: r.last, sample: (r.sample ?? "").slice(0, 100) })) };
 }

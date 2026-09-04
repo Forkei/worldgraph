@@ -253,7 +253,12 @@ async function statusCmd() {
     const b = c.budget && c.budget.limit != null ? `  [${rnd(c.budget.left ?? c.budget.used)}/${rnd(c.budget.limit)} ${c.budget.unit} left]` : "";
     console.log(`  ${mark[c.status]}  ${c.label.padEnd(30)} ${c.detail}${b}`);
   }
-  console.log(`\n  capabilities: ${r.capabilities.enabled} enabled${r.capabilities.off.length ? ` · off: ${r.capabilities.off.map((o) => `${o.id} (needs ${o.needs})`).join(", ")}` : ""}\n`);
+  console.log(`\n  capabilities: ${r.capabilities.enabled} enabled${r.capabilities.off.length ? ` · off: ${r.capabilities.off.map((o) => `${o.id} (needs ${o.needs})`).join(", ")}` : ""}`);
+  if (r.recentFailures.length) {
+    console.log(`\n  tool failures (last 7 days):`);
+    for (const f of r.recentFailures) console.log(`    ${String(f.count).padStart(3)}×  ${f.id.padEnd(24)} ${f.sample}`);
+  } else console.log(`\n  no tool failures recorded in the last 7 days`);
+  console.log("");
 }
 
 async function capabilitiesCmd() {

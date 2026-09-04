@@ -88,6 +88,12 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
     } catch (e) { return { src: null, msg: "could not fetch: " + String((e as Error).message).slice(0, 160) }; }
   };
   const note = async (kind: string, title: string | null, body: string, refs: unknown[] = []) => { await query(`INSERT INTO notes (id, investigation_id, kind, title, body, refs) VALUES ($1,$2,$3,$4,$5,$6)`, [uuidv7(), inv.id, kind, title, body, JSON.stringify(refs)]); };
+  // Record a tool failure so "is anything erroring" is a query, not a guess (capability errors otherwise vanish
+  // into the model's context). Also surfaces it live in the activity feed so the user sees it in the app.
+  const logFail = async (kind: string, target: unknown, capId: string | null, msg: string) => {
+    await query(`INSERT INTO actions (id, investigation_id, kind, target, capability_id, state, result, cost_usd, seconds, started_at, finished_at) VALUES ($1,$2,$3,$4,$5,'error',$6,0,0,now(),now())`, [uuidv7(), inv.id, kind, JSON.stringify(target), capId, msg.slice(0, 500)]).catch(() => {});
+    deps.chat?.activity?.(`⚠ ${capId ?? kind} failed: ${msg.slice(0, 120)}`);
+  };
   /** a claim the agent asserts itself must cite a source it has read (a page or a capability result) and a quote on it */
   const sourceForAssertion = async (url: string, quote: string): Promise<{ src: SourceRow } | { err: string }> => {
     const st = staged.get(url); const src = st?.source ?? (await findSourceByUrl(inv.id, url));
@@ -159,7 +165,11 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
         const ck = `search.${engine}|${q.toLowerCase()}|p${page}${S("lang") ? "|" + S("lang") : ""}`;
         let res: SearchResult; const cached = await getCachedSearch(ck);
         if (cached) res = cached.result as SearchResult;
-        else { res = await SEARCH_ENGINES[engine]!(q, { page, lang: S("lang") || undefined }); toolUsd += res.usd; await putCachedSearch(ck, `search.${engine}`, { q, page }, res, "7 days"); }
+        else {
+          try { res = await SEARCH_ENGINES[engine]!(q, { page, lang: S("lang") || undefined }); }
+          catch (e) { const msg = String((e as Error).message).slice(0, 300); await logFail("search", { engine, q, page }, `search.${engine}`, msg); return `search on ${engine} failed: ${msg}${/quota|limit|429|run out|exhaust/i.test(msg) ? " — this engine is out of quota; try another engine (exa is semantic) or rely on read_url" : ""}`; }
+          toolUsd += res.usd; await putCachedSearch(ck, `search.${engine}`, { q, page }, res, "7 days");
+        }
         await note("query", `${engine} p${page}`, `${q} → ${res.hits.length} hits${res.hits.length ? ": " + res.hits.slice(0, 5).map((h) => h.url).join(" ") : ""}`);
         if (!res.hits.length) return `no results on ${engine} page ${page}`;
         return `${engine} page ${page}${res.more ? " (more pages available)" : ""}:\n` + res.hits.map((h) => `${h.rank}. ${h.url}\n   ${h.title ?? ""}${h.snippet ? " — " + esc(h.snippet).slice(0, 160) : ""}${h.published_at ? "  [" + h.published_at + "]" : ""}`).join("\n");
@@ -230,7 +240,11 @@ export async function runInvestigator(inv: InvestigationRow, deps: InvestigatorD
         const ck = cacheKeyFor(id, kind, value);
         const cached = input.refetch ? null : await getCachedSearch(ck);
         let result = cached ? (cached.result as Awaited<ReturnType<typeof runner.run>>) : null;
-        if (!result) { result = await runner.run([value], kind); await putCachedSearch(ck, id, { kind, value }, { ...result, raw: undefined }, typeof row?.cache_ttl === "string" ? row.cache_ttl : "7 days"); }
+        if (!result) {
+          try { result = await runner.run([value], kind); }
+          catch (e) { const msg = String((e as Error).message).slice(0, 300); await logFail("capability", { kind, value, by: "investigator" }, id, msg); return `${id}(${value}) FAILED: ${msg}`; }
+          await putCachedSearch(ck, id, { kind, value }, { ...result, raw: undefined }, typeof row?.cache_ttl === "string" ? row.cache_ttl : "7 days");
+        }
         const facts = result.entities.length + result.edges.length + result.attributes.length;
         let landed = "";
         if (facts) { const ing = await ingestCapability(inv.id, ctx, result, value); landed = ing.status === "duplicate" ? "already in the graph from an earlier run" : `${ing.claims} claims written (source ${result.provenance.url ?? "capability://" + id + "/" + value})`; }
