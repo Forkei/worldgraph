@@ -91,12 +91,19 @@ export async function exaSearch(query: string, opts: SearchOpts & { type?: strin
 }
 
 /** Engine name as the agent says it → runner. */
+// A SerpAPI engine that transparently falls back to Serper (Google) when SerpAPI is unavailable/dry — so
+// rotating engines never dead-ends on a 429. Serper returns Google results, which is a fine substitute.
+const withSerperFallback = (engine: SerpEngine) => async (q: string, o?: SearchOpts): Promise<SearchResult> => {
+  if (env.serpApiKey) { try { return await serpApiSearch(q, { ...o, engine }); } catch { /* fall through to Serper */ } }
+  return serperSearch(q, o);
+};
+
 export const SEARCH_ENGINES: Record<string, (q: string, o?: SearchOpts) => Promise<SearchResult>> = {
   google: (q, o) => googleSearch(q, o), // Serper first, SerpAPI fallback
-  bing: (q, o) => serpApiSearch(q, { ...o, engine: "bing" }),
-  duckduckgo: (q, o) => serpApiSearch(q, { ...o, engine: "duckduckgo" }),
-  yandex: (q, o) => serpApiSearch(q, { ...o, engine: "yandex" }),
-  yahoo: (q, o) => serpApiSearch(q, { ...o, engine: "yahoo" }),
+  bing: withSerperFallback("bing"),
+  duckduckgo: withSerperFallback("duckduckgo"),
+  yandex: withSerperFallback("yandex"),
+  yahoo: withSerperFallback("yahoo"),
   exa: (q, o) => exaSearch(q, o),
   // legacy ids used by the registry / cache keys
   "search.serpapi.google": (q, o) => serpApiSearch(q, { ...o, engine: "google" }),
