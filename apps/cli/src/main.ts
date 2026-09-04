@@ -11,7 +11,7 @@ import {
 import { fetchUrl, FsBlobStore, blobKey, sha256, serpApiSearch, exaSearch, CAP_RUNNERS, type SearchResult, type PivotKind } from "@worldgraph/acquire";
 import { exportHtml } from "./exportHtml.ts";
 import { extractSource, getModel, hasKeyFor, DEFAULT_MODEL, MODELS, promptVersion, judgePair, runToolLoop, extractClaimsOnly, callModel, buildClaims, type Side } from "@worldgraph/extract";
-import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers, runPivots, harvestPivots, seedPivots, runInvestigator, type PivotSeed } from "@worldgraph/plan";
+import { compileQuestion, saveQuestion, indicatorTemplates, openQuestions, computeGaps, buildMissions, saveMissions, proposedMissions, setMissionState, modelCandidatePairs, modelPeers, runPivots, harvestPivots, seedPivots, runInvestigator, healthCheck, type PivotSeed } from "@worldgraph/plan";
 import { rebuild, syncRules, loadRuleFiles, loadGraph, ego, paths, intersect, fold, timeline, at, contested, similar, why, recordDecision, listDecisions, bcubed, goldToMap, loadGoldFile, type Graph, type GLink, type Subgraph } from "@worldgraph/knowledge";
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -47,6 +47,7 @@ async function main() {
     case "forget": return forget(sub ?? s("inv"));
     case "export-records": return exportRecords(rest[0] ?? sub);
     case "dispatch": return void (await dispatch(sub ?? s("inv")));
+    case "status": case "health": return statusCmd();
     case "capabilities": case "caps": return capabilitiesCmd();
     case "cap": return capCmd(sub, rest);
     case "pivot": return pivotCmd(sub ?? s("inv"), ...rest);
@@ -238,6 +239,21 @@ async function ingestUrl(invId: string, ctx: Parameters<typeof extractSource>[0]
   if (sum.publisher_name) await setSourcePublisher(src.id, sum.publisher_name, sum.publisher_kind ?? "unknown");
   await updateSourceStatus(src.id, "extracted");
   return { status, src, sum };
+}
+
+// System pre-check: probe every provider's live budget, the DB, and what's enabled/off — so nothing is
+// silently broken or out of credits before a run/demo.
+async function statusCmd() {
+  await syncCapabilities((name) => !!process.env[name]);
+  const r = await healthCheck();
+  const mark = { ok: "  OK ", warn: " WARN", down: " DOWN", off: " off " } as const;
+  console.log(`\nWorldGraph status — ${r.ready ? "ALL GREEN" : r.ok ? "usable, with warnings" : "SOMETHING IS DOWN"}\n`);
+  for (const c of r.checks) {
+    const rnd = (n: number) => Math.round(n * 100) / 100;
+    const b = c.budget && c.budget.limit != null ? `  [${rnd(c.budget.left ?? c.budget.used)}/${rnd(c.budget.limit)} ${c.budget.unit} left]` : "";
+    console.log(`  ${mark[c.status]}  ${c.label.padEnd(30)} ${c.detail}${b}`);
+  }
+  console.log(`\n  capabilities: ${r.capabilities.enabled} enabled${r.capabilities.off.length ? ` · off: ${r.capabilities.off.map((o) => `${o.id} (needs ${o.needs})`).join(", ")}` : ""}\n`);
 }
 
 async function capabilitiesCmd() {
