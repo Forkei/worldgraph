@@ -1,5 +1,6 @@
-// Search capabilities (M2 §8): turn a query into candidate URLs. SerpAPI fronts Google, Bing, DuckDuckGo, Yandex and
-// Yahoo (each with its own pagination parameter); Exa is semantic/neural discovery. Every engine returns the same
+// Search capabilities (M2 §8): turn a query into candidate URLs. `google` is Serper.dev (real Google SERP, ~$1/1k)
+// with SerpAPI as automatic fallback; SerpAPI alone fronts Bing, DuckDuckGo, Yandex and Yahoo (each with its own
+// pagination parameter); Exa is semantic/neural discovery. Every engine returns the same
 // SearchHit list, paged, so the investigator can go to page 2, 3, … instead of living on page 1. Results become
 // Sources like any page. No graph writes here — the agent decides what to fetch.
 import { env } from "@worldgraph/core";
@@ -43,6 +44,31 @@ export async function serpApiSearch(query: string, opts: SearchOpts & { engine?:
 
 /** Exa neural/semantic search. type:auto balances relevance and speed; highlights kept for triage. Exa has no
  *  pages; page N is emulated by asking for N×num results and slicing (cost is per request, not per result). */
+/** Serper.dev — real Google SERP at ~$1 per 1,000 (vs ~$10+ on SerpAPI). Operators (site:, quotes, -term) and
+ *  pagination work as written. This is the PRIMARY google engine; SerpAPI is the automatic fallback. */
+export async function serperSearch(query: string, opts: SearchOpts = {}): Promise<SearchResult> {
+  if (!env.serperKey) throw new Error("no SERPER_API_KEY in .env");
+  const page = Math.max(1, opts.page ?? 1), num = opts.num ?? 10;
+  await rateLimit("serper", 300);
+  const body: Record<string, unknown> = { q: query, num, page };
+  if (opts.lang) body.hl = opts.lang;
+  if (opts.location) body.location = opts.location;
+  const res = await fetch("https://google.serper.dev/search", { method: "POST", headers: { "X-API-KEY": env.serperKey, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`serper ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const j = (await res.json()) as { organic?: { link?: string; title?: string; snippet?: string; date?: string }[] };
+  const base = (page - 1) * num;
+  const hits: SearchHit[] = (j.organic ?? []).filter((r) => r.link).map((r, i) => ({ url: r.link!, title: r.title ?? null, snippet: r.snippet ?? null, published_at: r.date ?? null, rank: base + i + 1 }));
+  return { engine: "search.serper.google", query, page, hits, usd: 0.001, more: hits.length >= num };
+}
+
+/** google = Serper first, SerpAPI fallback — one provider running dry can't blind the agent. */
+export async function googleSearch(query: string, opts: SearchOpts = {}): Promise<SearchResult> {
+  const errs: string[] = [];
+  if (env.serperKey) { try { return await serperSearch(query, opts); } catch (e) { errs.push(`serper: ${String((e as Error).message).slice(0, 120)}`); } }
+  if (env.serpApiKey) { try { return await serpApiSearch(query, { ...opts, engine: "google" }); } catch (e) { errs.push(`serpapi: ${String((e as Error).message).slice(0, 120)}`); } }
+  throw new Error(errs.length ? `google search failed on every provider — ${errs.join(" | ")}` : "no SERPER_API_KEY or SERPAPI_KEY in .env");
+}
+
 export async function exaSearch(query: string, opts: SearchOpts & { type?: string; includeDomains?: string[]; excludeDomains?: string[] } = {}): Promise<SearchResult> {
   if (!env.exaKey) throw new Error("no EXA_API_KEY in .env");
   await rateLimit("exa", 1000);
@@ -66,7 +92,7 @@ export async function exaSearch(query: string, opts: SearchOpts & { type?: strin
 
 /** Engine name as the agent says it → runner. */
 export const SEARCH_ENGINES: Record<string, (q: string, o?: SearchOpts) => Promise<SearchResult>> = {
-  google: (q, o) => serpApiSearch(q, { ...o, engine: "google" }),
+  google: (q, o) => googleSearch(q, o), // Serper first, SerpAPI fallback
   bing: (q, o) => serpApiSearch(q, { ...o, engine: "bing" }),
   duckduckgo: (q, o) => serpApiSearch(q, { ...o, engine: "duckduckgo" }),
   yandex: (q, o) => serpApiSearch(q, { ...o, engine: "yandex" }),

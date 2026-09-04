@@ -13,6 +13,7 @@ export const env = {
   geminiKey: process.env.GEMINI_API_KEY ?? "",
   firecrawlKey: process.env.FIRECRAWL_API_KEY ?? "",
   serpApiKey: process.env.SERPAPI_KEY ?? "",
+  serperKey: process.env.SERPER_API_KEY ?? "",
   exaKey: process.env.EXA_API_KEY ?? "",
   blobDir: process.env.WG_BLOB_DIR ?? path.join(REPO_ROOT, "data", "blobs"),
 };

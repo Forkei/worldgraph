@@ -47,6 +47,19 @@ async function probeSerpApi(): Promise<HealthCheck> {
   } catch (e) { return { id, label, status: "down", detail: `unreachable: ${String((e as Error).message).slice(0, 80)}` }; }
 }
 
+async function probeSerper(): Promise<HealthCheck> {
+  const id = "serper", label = "Serper (Google search, primary)";
+  if (!has("SERPER_API_KEY")) return { id, label, status: "off", detail: "no SERPER_API_KEY — google falls back to SerpAPI" };
+  try {
+    // Serper exposes no balance endpoint; a 1-credit ping (~$0.001) confirms the key + quota are live
+    const res = await timed(8000, fetch("https://google.serper.dev/search", { method: "POST", headers: { "X-API-KEY": process.env.SERPER_API_KEY!, "Content-Type": "application/json" }, body: JSON.stringify({ q: "worldgraph healthcheck", num: 1 }) }));
+    if (res.status === 401 || res.status === 403) return { id, label, status: "down", detail: `key rejected (${res.status})` };
+    if (res.status === 402 || res.status === 429) return { id, label, status: "down", detail: "out of credits / rate-limited — top up at serper.dev" };
+    if (res.status !== 200) return { id, label, status: "warn", detail: `unexpected HTTP ${res.status}` };
+    return { id, label, status: "ok", detail: "key valid, quota live (balance on serper.dev dashboard)" };
+  } catch (e) { return { id, label, status: "down", detail: `unreachable: ${String((e as Error).message).slice(0, 80)}` }; }
+}
+
 async function probeApify(): Promise<HealthCheck> {
   const id = "apify", label = "Apify (Instagram / social)";
   if (!has("APIFY_TOKEN")) return { id, label, status: "off", detail: "no APIFY_TOKEN — social capabilities disabled" };
@@ -107,8 +120,8 @@ async function probeDb(): Promise<HealthCheck> {
 
 /** Run every check in parallel. Never throws; a probe that fails becomes a down/warn check. */
 export async function healthCheck(): Promise<HealthReport> {
-  const [db, serp, apify, vt, dehashed, anthropic, gemini, firecrawl, exa, facecheck, caps] = await Promise.all([
-    probeDb(), probeSerpApi(), probeApify(), probeVirusTotal(), probeDehashed(),
+  const [db, serp, serper, apify, vt, dehashed, anthropic, gemini, firecrawl, exa, facecheck, caps] = await Promise.all([
+    probeDb(), probeSerpApi(), probeSerper(), probeApify(), probeVirusTotal(), probeDehashed(),
     probeKeyOnly("anthropic", "Anthropic (agent model)", "ANTHROPIC_API_KEY", "no ANTHROPIC_API_KEY — the agent cannot run"),
     probeKeyOnly("gemini", "Gemini (vision + extraction)", "GEMINI_API_KEY", "no GEMINI_API_KEY — vision/look_at disabled"),
     probeKeyOnly("firecrawl", "Firecrawl (page fetch)", "FIRECRAWL_API_KEY", "no FIRECRAWL_API_KEY — falls back to plain HTTP"),
@@ -116,7 +129,9 @@ export async function healthCheck(): Promise<HealthReport> {
     probeKeyOnly("facecheck", "FaceCheck (face search)", "FACECHECK_API_TOKEN", "no token — face search off (intended)"),
     listCapabilities().catch(() => [] as Awaited<ReturnType<typeof listCapabilities>>),
   ]);
-  const checks = [db, anthropic, gemini, serp, firecrawl, exa, apify, vt, dehashed, facecheck];
+  // SerpAPI is only the fallback once Serper is live: it running dry must not read as "search is down"
+  if (serper.status === "ok" && serp.status === "down") { serp.status = "warn"; serp.detail = `${serp.detail} — fallback only; google runs on Serper`; }
+  const checks = [db, anthropic, gemini, serper, serp, firecrawl, exa, apify, vt, dehashed, facecheck];
   const off = caps.filter((c) => !c.enabled).map((c) => ({ id: c.id, needs: (c.requires as { key?: string }).key ?? "gate" }));
   // post-check: tool failures recorded in the last 7 days (capability/search errors now land in `actions`)
   const recentFailures = db.status === "down" ? [] : await query<{ id: string; count: string; last: string; sample: string }>(
