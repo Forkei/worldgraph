@@ -29,3 +29,7 @@ tools/
 ml/records.jsonl
 ml/triberta-min/
 .env-secrets
+ml/triberta-onnx/
+ml/triberta-min.prev/
+ml/records.prev.jsonl
+ml/train.log
