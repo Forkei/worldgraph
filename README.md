@@ -2,6 +2,10 @@
 
 **An open-source-intelligence engine where every fact is sourced, every edit is reversible, and one agent is in control.**
 
+![The evidence graph of an investigation into a public company — 305 entities, 338 links, 15 sources, laid out by force. Each colour is an entity type; each line is a graded, sourced relationship.](docs/images/graph.png)
+
+*A public-company investigation, seen in the app: the company's domain and its accounts (orange), the corporate structure (purple), and the people, documents and places around the operating entity — every link graded and traceable to a quote.*
+
 Give it a subject — a person, a company, a domain, a URL — and an investigator agent works the way a professional does: searches across engines with real operators, reads pages, runs a toolbox of public-record and infrastructure connectors, looks at photos, and builds a typed evidence graph as it goes. Every claim in that graph carries a verbatim quote and its source. Same-name entities are kept apart until evidence joins them. Every merge, split and retraction is recorded and can be undone. You can talk to the investigator mid-run, or ask the finished graph questions in plain language and get cited answers.
 
 It is a personal research tool for **public entities and open sources**: read-only, no logins, no leaked credentials, nothing intrusive.
