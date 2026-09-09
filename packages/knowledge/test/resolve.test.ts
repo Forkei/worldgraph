@@ -70,19 +70,19 @@ describe("resolve — people", () => {
   });
 
   it("an identical full name across sources is a hypothesis, not a merge — until context or a key lifts it", () => {
-    const alone = resolve([P("s1", "person", "Eliot Varney"), P("s2", "person", "Eliot VARNEY"), ...filler], []);
+    const alone = resolve([P("s1", "person", "Jules Marchand"), P("s2", "person", "Jules MARCHAND"), ...filler], []);
     expect(alone.clusters.get("s1")).not.toBe(alone.clusters.get("s2"));
     expect(alone.hypotheses.some((h) => h.a === "s1" && h.b === "s2")).toBe(true);
     // shared context proposes a candidate but NEVER merges — only an identifier, a judgment, or the owner merges (v0.4 §5)
-    const shared = resolve([P("s1", "person", "Eliot Varney", { neighbors: new Set(["uni", "club"]) }), P("s2", "person", "Eliot VARNEY", { neighbors: new Set(["uni", "club"]) }), ...filler], []);
+    const shared = resolve([P("s1", "person", "Jules Marchand", { neighbors: new Set(["uni", "club"]) }), P("s2", "person", "Jules MARCHAND", { neighbors: new Set(["uni", "club"]) }), ...filler], []);
     expect(shared.clusters.get("s1")).not.toBe(shared.clusters.get("s2"));
     expect(shared.hypotheses.some((h) => (h.a === "s1" && h.b === "s2") || (h.a === "s2" && h.b === "s1"))).toBe(true);
-    const keyed = resolve([P("s1", "person", "Eliot Varney", { keys: { handle: ["@handle-e"] } }), P("s2", "person", "Eliot VARNEY", { keys: { handle: ["@handle-e"] } }), ...filler], []);
+    const keyed = resolve([P("s1", "person", "Jules Marchand", { keys: { handle: ["@jmarchand"] } }), P("s2", "person", "Jules MARCHAND", { keys: { handle: ["@jmarchand"] } }), ...filler], []);
     expect(keyed.clusters.get("s1")).toBe(keyed.clusters.get("s2"));   // a shared unique identifier merges
   });
 
   it("decisions override scores and are reversible by a later not_same", () => {
-    const ents = [P("a", "person", "Eliot Varney"), P("b", "person", "Eliot VARNEY", { keys: { licence: ["1000001"] } }), ...filler];
+    const ents = [P("a", "person", "Jules Marchand"), P("b", "person", "Jules MARCHAND", { keys: { licence: ["1000001"] } }), ...filler];
     const same = resolve(ents, [{ a_id: "a", b_id: "b", verdict: "same" }]);
     expect(same.clusters.get("a")).toBe(same.clusters.get("b"));
     const split = resolve(ents, [{ a_id: "a", b_id: "b", verdict: "not_same" }]);
@@ -106,15 +106,15 @@ describe("scoring pieces", () => {
 describe("identity: scores propose, only keys/decisions/owner merge (v0.4 §5)", () => {
   it("a high-scoring same-name pair with lots of context is a hypothesis, not a merge", () => {
     const r = resolve([
-      P("s1", "person", "Eliot Varney", { neighbors: new Set(["uni", "club", "aix"]) }),
-      P("s2", "person", "Eliot VARNEY", { neighbors: new Set(["uni", "club", "aix"]) }), ...filler], []);
+      P("s1", "person", "Jules Marchand", { neighbors: new Set(["uni", "club", "aix"]) }),
+      P("s2", "person", "Jules MARCHAND", { neighbors: new Set(["uni", "club", "aix"]) }), ...filler], []);
     expect(r.merges.some((m) => [m.a, m.b].includes("s1") && [m.a, m.b].includes("s2"))).toBe(false);
     expect(r.hypotheses.some((h) => [h.a, h.b].includes("s1") && [h.a, h.b].includes("s2"))).toBe(true);
   });
   it("a shared unique identifier merges; a judgment (decision) merges; a conflicting unique key never merges", () => {
     const key = resolve([P("a", "person", "Jane Doe", { keys: { email: ["j@x.org"] } }), P("b", "person", "Jane M. Doe", { keys: { email: ["j@x.org"] } }), ...filler], []);
     expect(key.clusters.get("a")).toBe(key.clusters.get("b"));
-    const judged = resolve([P("a", "person", "Eliot Varney"), P("b", "person", "Eliot VARNEY"), ...filler], [{ a_id: "a", b_id: "b", verdict: "same" }]);
+    const judged = resolve([P("a", "person", "Jules Marchand"), P("b", "person", "Jules MARCHAND"), ...filler], [{ a_id: "a", b_id: "b", verdict: "same" }]);
     expect(judged.clusters.get("a")).toBe(judged.clusters.get("b"));
     const conflict = resolve([P("a", "person", "Jane Doe", { keys: { email: ["a@x.org"] } }), P("b", "person", "Jane Doe", { keys: { email: ["b@y.org"] } }), ...filler], [{ a_id: "a", b_id: "b", verdict: "same" }]);
     expect(conflict.clusters.get("a")).not.toBe(conflict.clusters.get("b"));   // a hard-key conflict guards even a decision

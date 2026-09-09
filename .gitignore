@@ -33,3 +33,13 @@ ml/triberta-onnx/
 ml/triberta-min.prev/
 ml/records.prev.jsonl
 ml/train.log
+
+# investigation files on real people stay local — only the fictional example gold set is tracked
+gold/*/
+!gold/example/
+docs/M0_REPORT.md
+# local scratch
+checkpoints/
+ml/graph.json
+ml/train.err
+ml/train.log

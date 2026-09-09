@@ -9,7 +9,7 @@ to push on before code.*
 A Question in one sentence → the dispatcher cuts it into missions → agents read whole pages, navigate on their
 own judgment, and work the board (contribute, suggest, challenge, propose) → the board re-derives incrementally
 after each contribution → the loop re-plans and stops by the stop rule, never a budget. Acceptance on seed A:
-`wg run 01a04f2b "Person A: every board seat, with dates, and who he sat with"` runs unattended to a graded
+`wg run 01a04f2b "Jane Doe: every board seat, with dates, and who she sat with"` runs unattended to a graded
 dossier, and `wg log` says which mission found each seat and why it ran. Parallel agents never corrupt the
 board (worst case: a few wasted pages).
 
@@ -174,7 +174,7 @@ verified (SerpAPI Starter 1,000/mo; Exa live). The row is the truth about cost/t
    Pinnacle when a filing dates his exit; the co-director agent reads company board pages, follows link-table
    entries to bios, contributes `board_member` claims — which resolve against existing org entities.
 4. **board** re-derives incrementally per contribution; co-director folds appear in
-   `wg fold person-board_member-organization-board_member-person --from "Person A"`; a page that merely
+   `wg fold person-board_member-organization-board_member-person --from "Jane Doe"`; a page that merely
    repeats Crunchbase is one origin, not a second.
 5. **stop** when the rule holds → proof argument cites claim ids → context-isolated verifier reads only the
    evidence → dossier.

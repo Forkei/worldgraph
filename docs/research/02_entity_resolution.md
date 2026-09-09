@@ -49,7 +49,7 @@ OpenAlex's recipe ([how it's built](https://help.openalex.org/data/how-its-built
 - **Identity keys** (near-decisive): email, handle/URL, ORCID, registry/licence number, phone. Same key ⇒ +15; conflicting key ⇒ veto.
 - **Context**: employer (+4), city (+2), overlapping years (+1), shared co-mentions (+3 each, cap 9), same activity domain (+1).
 - **Negative evidence**: conflicting DOB / gender / concurrent employer / distinct hard IDs ⇒ `not_same_as`.
-- **Common-name**: u from name frequency (INSEE/SSA tables or corpus frequency). "Eliot Varney" is rare ⇒ name alone ~+10; "Jean Martin" ~+2.
+- **Common-name**: u from name frequency (INSEE/SSA tables or corpus frequency). "Jules Marchand" is rare ⇒ name alone ~+10; "Jean Martin" ~+2.
 
 ## 6. Reversibility & provenance
 
@@ -65,7 +65,7 @@ Stable entity IDs via `canonical_mention` (oldest wins); undo = superseding deci
 
 ## 7. Evaluation
 
-Measure at cluster level (B³ precision/recall), not only pairwise — pairwise F1 hides cascading merges ([Linacre](https://www.robinlinacre.com/measuring_data_linking_accuracy/); [er-evaluation](https://github.com/OlivierBinette/Awesome-Entity-Resolution)). Build gold by **scenario sampling**: group candidate pairs by comparison vector, label 5–10 per frequent vector + adversarial cases (two the maintainers, AMCD vs AM). 200–400 labels suffice. Track pairwise P/R in the middle band, B³ F1, clusters split by conflict check, LLM call cost.
+Measure at cluster level (B³ precision/recall), not only pairwise — pairwise F1 hides cascading merges ([Linacre](https://www.robinlinacre.com/measuring_data_linking_accuracy/); [er-evaluation](https://github.com/OlivierBinette/Awesome-Entity-Resolution)). Build gold by **scenario sampling**: group candidate pairs by comparison vector, label 5–10 per frequent vector + adversarial cases (two Jules Marchands, AMCD vs AM). 200–400 labels suffice. Track pairwise P/R in the middle band, B³ F1, clusters split by conflict check, LLM call cost.
 
 ## Recommendation for WorldGraph M1
 

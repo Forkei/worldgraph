@@ -46,7 +46,7 @@ vocabulary; a new feature reads them, it does not reshape them.
    stores a rendered HTML snapshot; claims carry a `passage` window; `clusterOrigins` (5-shingle Jaccard ≥ 0.6
    within one fact, same page = same origin, same family = same origin) with the planted test (10 copies → 1
    origin; a paraphrase is *not* a copy). Seed A: 1,273 claims → 984 origin clusters over 871 facts, 80 facts
-   with ≥ 2 independent origins — e.g. "Person A works_at Alder Maple": 22 claims, **6** independent origins.
+   with ≥ 2 independent origins — e.g. "Jane Doe works_at Acme Ventures": 22 claims, **6** independent origins.
 3. **Slots + rules**: `slot`, `rule` tables; shape rules and expected-record rules (US-IL teacher set, FR
    company set) as YAML → rows; the gap query (open/stale slots, interval holes, missing reciprocals).
    *Test:* seed A shows its open slots; a planted interval hole appears as a slot with a window.
@@ -139,7 +139,7 @@ M1 acceptance = all six tests, on gold seeds A (Person A), E (Person E), and C (
 B³ ≥ 0.9 awaits the human-reviewed gold files (`gold/*/entities.yaml`).**
 
 ## Gold seeds
-A Person A (public figure) · E the maintainer (self) · a third common-name public figure (to pick) · later: a
+A a venture-capital partner (public figure) · E the author (self) · a third common-name public figure (to pick) · later: a
 private individual the maintainer chooses (the original use case) · an event · an organization.
 
 ## Prerequisites

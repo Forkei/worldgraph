@@ -11,7 +11,7 @@ describe("nameNorm", () => {
   });
   it("strips honorifics for people and keeps accents comparable", () => {
     expect(nameNorm("Mrs. Jane Doe", "person")).toBe("jane doe");
-    expect(nameNorm("Eliot VARNEY", "person")).toBe("eliot varney");
+    expect(nameNorm("Jules MARCHAND", "person")).toBe("jules marchand");
     expect(nameNorm("Hélène D'Arcy", "person")).toBe("hélène darcy");
   });
   it("harvests identity keys from hints", () => {
