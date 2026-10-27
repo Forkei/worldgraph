@@ -1,0 +1,23 @@
+# Example gold clustering (fictional). Shows the file shape `wg gold <inv> eval <file>` expects.
+# One entry per real-world entity; members are provisional ids (stable per source x name).
+# Move ids between entries to correct the system; set reviewed: true when checked by a human.
+investigation: 00000000-0000-4000-8000-000000000001
+reviewed: false
+note: "Fictional namesake collision: two different people called Alex Sample, plus one organization seen under two names."
+entities:
+  - name: "Alex Sample"
+    type: person
+    members:
+      - 00000000-0000-4000-8000-0000000000a1   # Alex Sample (source 1)
+      - 00000000-0000-4000-8000-0000000000a2   # Alex Sample (source 2)
+      - 00000000-0000-4000-8000-0000000000a3   # A. Sample (source 3)
+  - name: "Alex Sample (the other one)"
+    type: person
+    members:
+      - 00000000-0000-4000-8000-0000000000b1   # Alex Sample (source 4)
+      - 00000000-0000-4000-8000-0000000000b2   # Alexander Sample (source 5)
+  - name: "Example Widgets Inc"
+    type: organization
+    members:
+      - 00000000-0000-4000-8000-0000000000c1   # Example Widgets Inc
+      - 00000000-0000-4000-8000-0000000000c2   # Example Widgets

@@ -1,0 +1,4 @@
+# Fictional example. A real gold seed lists the pages the investigation was run on, one URL per line.
+https://example.org/people/alex-sample
+https://example.org/news/example-widgets-announces-new-product
+https://example.com/about
