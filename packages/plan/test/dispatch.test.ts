@@ -99,10 +99,10 @@ describe("dispatcher gaps", () => {
 describe("dispatcher reach — the owner earns a deep dive", () => {
   it("reaches people bound structurally to the subject even when no indicator names that predicate", () => {
     const INDO = [{ name: "ownership_and_operators", predicates: ["owns", "controls", "manages"], record_classes: [], weight: 1 }, { name: "litigation", predicates: ["party_to"], record_classes: [], weight: 0.6 }];
-    const g = makeGraph([E("srv", "organization", "Example Realm"), E("brad", "person", "Alex Sample"), E("tebex", "organization", "Tebex")],
-      [L("brad", "member_of", "srv", 2, "corroborated"), L("srv", "transacted_with", "tebex", 1)]);
+    const g = makeGraph([E("srv", "organization", "Example Realm"), E("opr", "person", "Alex Sample"), E("tebex", "organization", "Tebex")],
+      [L("opr", "member_of", "srv", 2, "corroborated"), L("srv", "transacted_with", "tebex", 1)]);
     const gaps = computeGaps(g, "srv", INDO, 2, { maxRing: 1 });
-    expect(gaps.some((x) => x.entity === "brad" && x.indicator === "ownership_and_operators")).toBe(true);
+    expect(gaps.some((x) => x.entity === "opr" && x.indicator === "ownership_and_operators")).toBe(true);
     expect(gaps.some((x) => x.entity === "tebex")).toBe(false);   // transactional, not named by an indicator
   });
 });
